@@ -45,9 +45,10 @@ Standard RAG (Retrieval-Augmented Generation) systems use simple vector similari
 | Contradiction Resolution         | ❌             | ✅ (PHOENIX Logic) |
 | JSON-Mode API Optimization       | ❌             | ✅ (Gemma 3 Fix)   |
 | Working Memory Buffer            | ❌             | ✅                 |
-| JSONL Observability Tracer       | ❌             | ✅                 |
+| JSONL Observability Tracer       | ❌             | ✅ (Deep Monitoring) |
 | Prompt injection protection      | ✅             | ✅                 |
 | GDPR-compliant forget            | ✅             | ✅                 |
+| **Batch Summarization**          | ❌             | ✅ (RPM Optimizer) |
 
 ### 🧠 7-Channel Hybrid Recall Scoring
 
