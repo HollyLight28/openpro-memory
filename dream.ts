@@ -29,6 +29,10 @@ export class DreamService {
   }
 
   public start(): void {
+    if (this.timer) {
+      this.api.logger.info("memory-hybrid: Dream Service is already running. Skipping start.");
+      return;
+    }
     this.api.logger.info("memory-hybrid: Dream Service initialized.");
     this.timer = setInterval(() => void this.tick(), LOOP_INTERVAL_MS);
   }

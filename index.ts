@@ -336,7 +336,9 @@ export class MemoryDB {
       };
     });
 
-    return mapped.filter((r) => r.score >= minScore).slice(0, limit);
+    // Return all candidates to let hybridScore perform final re-ranking and slicing.
+    // This ensures temporal/importance boosts across all 50-70 candidates.
+    return mapped.filter((r) => r.score >= minScore);
   }
 
   /**
@@ -398,9 +400,8 @@ export class MemoryDB {
       }
     }
 
-    return [...initialResults, ...associativeResults]
-      .sort((a, b) => b.score - a.score)
-      .slice(0, limit);
+    // Return all combined results to let hybridScore perform final re-ranking and slicing.
+    return [...initialResults, ...associativeResults].sort((a, b) => b.score - a.score);
   }
 
   async getById(id: string): Promise<MemoryEntry | null> {
@@ -690,9 +691,10 @@ const memoryPlugin = {
 
           // Apply hybrid scoring
           const scored = hybridScore(rawResults, graphDB);
+          const finalScored = scored.slice(0, limit);
 
           // Build response text
-          let text = scored
+          let text = finalScored
             .map(
               (r, i) =>
                 `${i + 1}. [${r.entry.category}] ${r.entry.text} (${(r.finalScore * 100).toFixed(0)}%)`,
@@ -700,13 +702,13 @@ const memoryPlugin = {
             .join("\n");
 
           // Add graph enrichment
-          const graphInfo = getGraphEnrichment(scored, graphDB);
+          const graphInfo = getGraphEnrichment(finalScored, graphDB);
           if (graphInfo) {
             text += graphInfo;
           }
 
           // Strip vectors for serialization
-          const sanitized = scored.map((r) => ({
+          const sanitized = finalScored.map((r) => ({
             id: r.entry.id,
             text: r.entry.text,
             category: r.entry.category,
@@ -714,14 +716,20 @@ const memoryPlugin = {
             score: r.finalScore,
           }));
 
+          tracer.traceRecall(query, finalScored.map(s => ({
+            id: s.entry.id,
+            text: s.entry.text,
+            score: s.finalScore
+          })));
+
           return {
             content: [
               {
                 type: "text",
-                text: `Found ${scored.length} memories:\n\n${text}`,
+                text: `Found ${finalScored.length} memories:\n\n${text}`,
               },
             ],
-            details: { count: scored.length, memories: sanitized },
+            details: { count: finalScored.length, memories: sanitized },
           };
         },
       },
@@ -1381,17 +1389,16 @@ const memoryPlugin = {
           const vector = await embeddings.embed(event.prompt);
           const rawResults = await db.searchWithAMHR(vector, limit, graphDB, 0.3);
 
-          if (rawResults.length === 0) return;
-
-          // Apply hybrid scoring for better ranking
+          // Apply hybrid scoring
           const scored = hybridScore(rawResults, graphDB);
+          const finalScored = scored.slice(0, limit);
 
-          api.logger.info(`memory-hybrid: injecting ${scored.length} memories`);
+          api.logger.info(`memory-hybrid: injecting ${finalScored.length} memories`);
 
           // Stage 3: Use Radar (Star Map) instead of full text injection
           // This sends lightweight summaries + IDs instead of heavy full texts
           const radarContext = formatRadarContext(
-            scored.map((r) => ({
+            finalScored.map((r) => ({
               id: r.entry.id,
               category: r.entry.category as MemoryCategory,
               summary: r.entry.summary,
@@ -1400,7 +1407,7 @@ const memoryPlugin = {
           );
 
           // Add graph enrichment to context
-          const graphInfo = getGraphEnrichment(scored, graphDB);
+          const graphInfo = getGraphEnrichment(finalScored, graphDB);
           let context = radarContext;
           if (graphInfo) {
             context = context.replace("</star-map>", graphInfo + "\n</star-map>");
@@ -1411,10 +1418,10 @@ const memoryPlugin = {
           const ids = rawResults.map((r) => r.entry.id);
           db.incrementRecallCount(ids);
 
-          tracer.traceRecall(event.prompt, scored.map(s => ({ 
+          tracer.traceRecall(event.prompt, finalScored.map(s => ({ 
             id: s.entry.id, 
             text: s.entry.text, 
-            score: s.score 
+            score: s.finalScore 
           })));
 
           return { prependContext: context };
