@@ -157,10 +157,12 @@ export async function mergeFactsBatch(
   if (clusters.length === 0) return [];
   if (clusters.length === 1) return [await mergeFacts(clusters[0], chatModel)];
 
-  const formattedClusters = clusters.map((facts, i) => {
-    const list = facts.map((f, j) => `  ${j + 1}. ${f}`).join("\n");
-    return `Cluster ${i + 1}:\n${list}`;
-  }).join("\n\n");
+  const formattedClusters = clusters
+    .map((facts, i) => {
+      const list = facts.map((f, j) => `  ${j + 1}. ${f}`).join("\n");
+      return `Cluster ${i + 1}:\n${list}`;
+    })
+    .join("\n\n");
 
   const prompt = `Merge the following independent clusters of facts. For EACH cluster, provide one concise, complete statement that captures all details.
 
@@ -172,11 +174,14 @@ ${formattedClusters}`;
 
   try {
     const response = await chatModel.complete([{ role: "user", content: prompt }], true);
-    const cleanJson = response.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+    const cleanJson = response
+      .replace(/```json\s*/g, "")
+      .replace(/```\s*/g, "")
+      .trim();
     const results = JSON.parse(cleanJson);
-    
+
     if (!Array.isArray(results)) throw new Error("Batch merge response is not an array");
-    
+
     // Map results back to index, ensuring we return null for any missing/invalid entries
     return clusters.map((_, i) => (typeof results[i] === "string" ? results[i] : null));
   } catch (error) {

@@ -521,11 +521,23 @@ ${factList}`;
 
   try {
     const response = await chatModel.complete([{ role: "user", content: prompt }], true);
-    const cleanJson = response.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
-    
+    const cleanJson = response
+      .replace(/```json\s*/g, "")
+      .replace(/```\s*/g, "")
+      .trim();
+
     const data = JSON.parse(cleanJson);
     const allowedRelations = new Set([
-      "HAS", "LIKES", "DISLIKES", "USES", "CREATED", "KNOWS", "WORKS_AT", "IS_A", "RELATED_TO", "EXPERIENCED"
+      "HAS",
+      "LIKES",
+      "DISLIKES",
+      "USES",
+      "CREATED",
+      "KNOWS",
+      "WORKS_AT",
+      "IS_A",
+      "RELATED_TO",
+      "EXPERIENCED",
     ]);
 
     const nodes: GraphNode[] = (data.nodes || [])

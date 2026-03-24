@@ -86,45 +86,45 @@ export class Embeddings {
 
   async embedBatch(texts: string[]): Promise<number[][]> {
     if (texts.length === 0) return [];
-    
+
     // Simple caching for batch: only embed what we need
     const results: number[][] = new Array(texts.length);
     const neededIndices: number[] = [];
     const neededTexts: string[] = [];
-    
+
     for (let i = 0; i < texts.length; i++) {
-        const cacheKey = `${this.model}:${texts[i]}`;
-        if (this.cache.has(cacheKey)) {
-            const val = this.cache.get(cacheKey)!;
-            this.cache.delete(cacheKey);
-            this.cache.set(cacheKey, val); // Move to LRU end
-            results[i] = val;
-        } else {
-            neededIndices.push(i);
-            neededTexts.push(texts[i]);
-        }
+      const cacheKey = `${this.model}:${texts[i]}`;
+      if (this.cache.has(cacheKey)) {
+        const val = this.cache.get(cacheKey)!;
+        this.cache.delete(cacheKey);
+        this.cache.set(cacheKey, val); // Move to LRU end
+        results[i] = val;
+      } else {
+        neededIndices.push(i);
+        neededTexts.push(texts[i]);
+      }
     }
-    
+
     if (neededTexts.length > 0) {
-        let newVectors: number[][];
-        if (this.provider === "openai") {
-            newVectors = await this.embedOpenAIBatch(neededTexts);
-        } else {
-            const dims = this.outputDimensionality ?? EMBEDDING_DIMENSIONS[this.model];
-            newVectors = await this.embedGoogleBatch(neededTexts, dims);
+      let newVectors: number[][];
+      if (this.provider === "openai") {
+        newVectors = await this.embedOpenAIBatch(neededTexts);
+      } else {
+        const dims = this.outputDimensionality ?? EMBEDDING_DIMENSIONS[this.model];
+        newVectors = await this.embedGoogleBatch(neededTexts, dims);
+      }
+
+      for (let i = 0; i < neededTexts.length; i++) {
+        const cacheKey = `${this.model}:${neededTexts[i]}`;
+        if (this.cache.size >= this.maxCacheSize) {
+          const firstKey = this.cache.keys().next().value;
+          if (firstKey) this.cache.delete(firstKey);
         }
-        
-        for (let i = 0; i < neededTexts.length; i++) {
-            const cacheKey = `${this.model}:${neededTexts[i]}`;
-            if (this.cache.size >= this.maxCacheSize) {
-                const firstKey = this.cache.keys().next().value;
-                if (firstKey) this.cache.delete(firstKey);
-            }
-            this.cache.set(cacheKey, newVectors[i]);
-            results[neededIndices[i]] = newVectors[i];
-        }
+        this.cache.set(cacheKey, newVectors[i]);
+        results[neededIndices[i]] = newVectors[i];
+      }
     }
-    
+
     return results;
   }
 

@@ -563,7 +563,7 @@ export class MemoryDB {
       // 4. Update the deltas map (only subtract what we actually flushed)
       for (const [id, countAtStart] of entriesToFlush) {
         if (!successfullyFlushedIds.includes(id)) continue;
-        
+
         const currentDelta = this.recallCountDeltas.get(id) ?? 0;
         const remaining = currentDelta - countAtStart;
         if (remaining <= 0) {
@@ -573,7 +573,11 @@ export class MemoryDB {
         }
       }
 
-      tracer.trace("flush_recall_counts", { count: updatedRows.length }, `Persisted recall counts for ${updatedRows.length} memories.`);
+      tracer.trace(
+        "flush_recall_counts",
+        { count: updatedRows.length },
+        `Persisted recall counts for ${updatedRows.length} memories.`,
+      );
 
       return updatedRows.length;
     } catch (error) {
@@ -716,11 +720,14 @@ const memoryPlugin = {
             score: r.finalScore,
           }));
 
-          tracer.traceRecall(query, finalScored.map(s => ({
-            id: s.entry.id,
-            text: s.entry.text,
-            score: s.finalScore
-          })));
+          tracer.traceRecall(
+            query,
+            finalScored.map((s) => ({
+              id: s.entry.id,
+              text: s.entry.text,
+              score: s.finalScore,
+            })),
+          );
 
           return {
             content: [
@@ -1093,6 +1100,13 @@ const memoryPlugin = {
               vectorScore: r.vectorScore,
               finalScore: r.finalScore,
             }));
+
+            tracer.traceRecall(query, output.map(s => ({ 
+              id: s.id, 
+              text: s.text, 
+              score: s.finalScore 
+            })));
+
             console.log(JSON.stringify(output, null, 2));
           });
 
@@ -1382,9 +1396,12 @@ const memoryPlugin = {
 
         try {
           // Dynamic Depth: Detect complex/sensitive topics to pull more memories
-          const isDeepTopic = /trauma|childhood|fear|secret|life|history|травм|дитинств|страх|таємниц|життя|історія/i.test(nPrompt);
+          const isDeepTopic =
+            /trauma|childhood|fear|secret|life|history|травм|дитинств|страх|таємниц|життя|історія/i.test(
+              nPrompt,
+            );
           const limit = isDeepTopic ? 30 : 5; // Expanded as requested (High TPM)
-          
+
           // Single embed call for both recall injection AND reinforcement
           const vector = await embeddings.embed(event.prompt);
           const rawResults = await db.searchWithAMHR(vector, limit, graphDB, 0.3);
@@ -1418,11 +1435,14 @@ const memoryPlugin = {
           const ids = rawResults.map((r) => r.entry.id);
           db.incrementRecallCount(ids);
 
-          tracer.traceRecall(event.prompt, finalScored.map(s => ({ 
-            id: s.entry.id, 
-            text: s.entry.text, 
-            score: s.finalScore 
-          })));
+          tracer.traceRecall(
+            event.prompt,
+            finalScored.map((s) => ({
+              id: s.entry.id,
+              text: s.entry.text,
+              score: s.finalScore,
+            })),
+          );
 
           return { prependContext: context };
         } catch (err) {
@@ -1439,12 +1459,12 @@ const memoryPlugin = {
       api.on("agent_end", async (event, ctx) => {
         // Skip memory capture for system/automated triggers to save quota (RPM)
         if (
-            ctx?.trigger === "system" ||
-            ctx?.trigger === "heartbeat" ||
-            ctx?.trigger === "cron" ||
-            ctx?.trigger === "memory"
+          ctx?.trigger === "system" ||
+          ctx?.trigger === "heartbeat" ||
+          ctx?.trigger === "cron" ||
+          ctx?.trigger === "memory"
         ) {
-            return;
+          return;
         }
 
         if (!event.success || !event.messages || event.messages.length === 0) {
@@ -1521,16 +1541,16 @@ const memoryPlugin = {
 
             if (result.shouldStore && result.facts.length > 0) {
               const factsToProcess = result.facts.slice(0, 5);
-              
+
               // BATCH EMBEDDING: Get all vectors in one call!
               api.logger.info(`memory-hybrid: batch embedding ${factsToProcess.length} facts`);
-              const vectors = await embeddings.embedBatch(factsToProcess.map(f => f.text));
-              
+              const vectors = await embeddings.embedBatch(factsToProcess.map((f) => f.text));
+
               let stored = 0;
               for (let i = 0; i < factsToProcess.length; i++) {
                 const fact = factsToProcess[i];
                 const vector = vectors[i];
-                
+
                 try {
                   // If LLM flagged this as a correction, search broadly and force contradiction check
                   let skipStore = false;
@@ -1584,31 +1604,32 @@ const memoryPlugin = {
 
               if (stored > 0) {
                 api.logger.info(`memory-hybrid: smart-captured ${stored} facts`);
-                
+
                 // BATCH GRAPH EXTRACTION: One call for all facts!
-                const factTexts = factsToProcess.map(f => f.text);
+                const factTexts = factsToProcess.map((f) => f.text);
                 extractGraphFromBatch(factTexts, chatModel)
                   .then(async (graph) => {
-                      if (graph.nodes.length > 0 || graph.edges.length > 0) {
-                          try {
-                              await graphDB.modify(() => {
-                                  for (const n of graph.nodes) graphDB.addNode(n);
-                                  for (const e of graph.edges) graphDB.addEdge(e);
-                              });
-                              tracer.traceGraph(graph.nodes.length, graph.edges.length);
-                              api.logger.info(`memory-hybrid: batch graph updated (+${graph.nodes.length} nodes, +${graph.edges.length} edges)`);
-                          } catch (err) {
-                              api.logger.warn(`memory-hybrid: batch-capture graph fail: ${String(err)}`);
-                          }
+                    if (graph.nodes.length > 0 || graph.edges.length > 0) {
+                      try {
+                        await graphDB.modify(() => {
+                          for (const n of graph.nodes) graphDB.addNode(n);
+                          for (const e of graph.edges) graphDB.addEdge(e);
+                        });
+                        tracer.traceGraph(graph.nodes.length, graph.edges.length);
+                        api.logger.info(
+                          `memory-hybrid: batch graph updated (+${graph.nodes.length} nodes, +${graph.edges.length} edges)`,
+                        );
+                      } catch (err) {
+                        api.logger.warn(`memory-hybrid: batch-capture graph fail: ${String(err)}`);
                       }
+                    }
                   })
-                  .catch(err => {
-                      api.logger.warn(`memory-hybrid: batch graph extraction fatal: ${String(err)}`);
+                  .catch((err) => {
+                    api.logger.warn(`memory-hybrid: batch graph extraction fatal: ${String(err)}`);
                   });
               }
             }
           }
-
 
           if (!cfg.smartCapture || userTexts.length === 0 || lastUserMsg.length >= 15) {
             // ---- Rule-based Capture (fallback, no API calls) ----

@@ -19,8 +19,8 @@
  * @module stack
  */
 
-import { type ChatModel } from "./chat.js";
 import { MIN_MESSAGE_LENGTH } from "./capture.js";
+import { type ChatModel } from "./chat.js";
 import { tracer } from "./tracer.js";
 
 /** A single compressed conversation turn */
@@ -37,7 +37,7 @@ export interface CompressedTurn {
  * Usage:
  *   const stack = new ConversationStack(30, 3);
  *   await stack.push(userMsg, assistantMsg, chatModel);
- *   const context = stack.getContextBlock(); 
+ *   const context = stack.getContextBlock();
  */
 export class ConversationStack {
   private turns: CompressedTurn[] = [];
@@ -137,7 +137,7 @@ Return ONLY the compressed summary, nothing else.`;
    */
   getSummary(): string {
     const compressed = this.turns.map((t, i) => `${i + 1}. ${t.summary}`).join("\n");
-    
+
     if (this.pendingTurns.length === 0) return compressed;
 
     const pending = this.pendingTurns
@@ -152,9 +152,9 @@ Return ONLY the compressed summary, nothing else.`;
    */
   getContextBlock(): string {
     if (this.isEmpty) return "";
-    
+
     let text = "Compressed history of the current conversation:\n" + this.getSummary();
-    
+
     return `<conversation-summary>\n${text}\n</conversation-summary>`;
   }
 

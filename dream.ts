@@ -146,70 +146,70 @@ export class DreamService {
 
     // 2. High-threshold clustering (0.92+ for safety)
     const clusters = clusterBySimilarity(all, 0.92);
-    const validClusters: Array<Array<{id: string, text: string, category: any}>> = [];
+    const validClusters: Array<Array<{ id: string; text: string; category: any }>> = [];
 
     for (const cluster of clusters) {
-        if (cluster.length < 2) continue;
+      if (cluster.length < 2) continue;
 
-        // SAFETY: Check if they are in the same category
-        const cats = cluster.map((c) => all.find((a) => a.id === c.id)?.category);
-        const uniqueCats = new Set(cats);
-        if (uniqueCats.size > 1) continue;
+      // SAFETY: Check if they are in the same category
+      const cats = cluster.map((c) => all.find((a) => a.id === c.id)?.category);
+      const uniqueCats = new Set(cats);
+      if (uniqueCats.size > 1) continue;
 
-        // Entity Check (Hallucination Guard)
-        const entitySets = cluster.map((item) => {
-            const found = this.graph.findEdgesForTexts([item.text]);
-            return new Set(found.flatMap((e) => [e.source, e.target]));
-        });
+      // Entity Check (Hallucination Guard)
+      const entitySets = cluster.map((item) => {
+        const found = this.graph.findEdgesForTexts([item.text]);
+        return new Set(found.flatMap((e) => [e.source, e.target]));
+      });
 
-        const allHaveEntities = entitySets.every((set) => set.size > 0);
-        if (allHaveEntities && entitySets.length > 1) {
-            let hasOverlap = false;
-            const setA = entitySets[0]!;
-            for (let i = 1; i < entitySets.length; i++) {
-                const setB = entitySets[i]!;
-                for (const item of setA) {
-                    if (setB.has(item)) hasOverlap = true;
-                }
-            }
-            if (!hasOverlap) continue;
+      const allHaveEntities = entitySets.every((set) => set.size > 0);
+      if (allHaveEntities && entitySets.length > 1) {
+        let hasOverlap = false;
+        const setA = entitySets[0]!;
+        for (let i = 1; i < entitySets.length; i++) {
+          const setB = entitySets[i]!;
+          for (const item of setA) {
+            if (setB.has(item)) hasOverlap = true;
+          }
         }
+        if (!hasOverlap) continue;
+      }
 
-        validClusters.push(cluster.map(c => ({...c, category: cats[0]})));
+      validClusters.push(cluster.map((c) => ({ ...c, category: cats[0] })));
     }
 
     if (validClusters.length === 0) return;
 
     // 3. Batch Merge! (High TPM / Low RPM)
-    const clusterTexts = validClusters.map(c => c.map(item => item.text));
+    const clusterTexts = validClusters.map((c) => c.map((item) => item.text));
     const mergedResults = await mergeFactsBatch(clusterTexts, this.chat);
 
     let mergedCount = 0;
     for (let i = 0; i < validClusters.length; i++) {
-        const merged = mergedResults[i];
-        if (!merged) continue;
+      const merged = mergedResults[i];
+      if (!merged) continue;
 
-        const cluster = validClusters[i];
-        const category = cluster[0].category;
+      const cluster = validClusters[i];
+      const category = cluster[0].category;
 
-        // Store new, delete old
-        const vector = await this.embeddings.embed(merged);
-        await this.db.store({
-            text: merged,
-            importance: 0.8,
-            category: category ?? "fact",
-            vector,
-            happenedAt: null,
-            validUntil: null,
-            summary: "Consolidated Memory",
-            emotionalTone: "neutral",
-            emotionScore: 0,
-        });
+      // Store new, delete old
+      const vector = await this.embeddings.embed(merged);
+      await this.db.store({
+        text: merged,
+        importance: 0.8,
+        category: category ?? "fact",
+        vector,
+        happenedAt: null,
+        validUntil: null,
+        summary: "Consolidated Memory",
+        emotionalTone: "neutral",
+        emotionScore: 0,
+      });
 
-        for (const item of cluster) {
-            await this.db.delete(item.id);
-        }
-        mergedCount++;
+      for (const item of cluster) {
+        await this.db.delete(item.id);
+      }
+      mergedCount++;
     }
 
     if (mergedCount > 0) {

@@ -58,7 +58,11 @@ describe("ConversationStack", () => {
     const mock = createMockChatModel(["Batch summary result."]);
     const stack = new ConversationStack(30, 2); // batch size 2
 
-    await stack.push("Question 1 is about architecture", "Answer 1 explains everything", mock as any);
+    await stack.push(
+      "Question 1 is about architecture",
+      "Answer 1 explains everything",
+      mock as any,
+    );
     expect(stack.turnCount).toBe(0);
 
     await stack.push("Question 2 is about memory", "Answer 2 clarifies it", mock as any);
@@ -70,7 +74,11 @@ describe("ConversationStack", () => {
     const mock = createMockChatModel(["Forced summary."]);
     const stack = new ConversationStack(30, 10); // large batch
 
-    await stack.push("Question 1 is about architecture", "Answer 1 explains everything", mock as any);
+    await stack.push(
+      "Question 1 is about architecture",
+      "Answer 1 explains everything",
+      mock as any,
+    );
     expect(stack.turnCount).toBe(0);
 
     await stack.flush(mock as any);
@@ -79,10 +87,7 @@ describe("ConversationStack", () => {
   });
 
   it("accumulates multiple batches into a stack", async () => {
-    const mock = createMockChatModel([
-      "Summary 1",
-      "Summary 2",
-    ]);
+    const mock = createMockChatModel(["Summary 1", "Summary 2"]);
     const stack = new ConversationStack(30, 2);
 
     await stack.push("Question 1 details here", "Answer 1 details here", mock as any);

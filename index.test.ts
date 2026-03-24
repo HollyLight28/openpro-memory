@@ -359,7 +359,7 @@ describe("MemoryDB Error Handling", () => {
 
       (db as any).ensureInitialized = vi.fn().mockResolvedValue(undefined);
       const state = { deleted: false };
-      
+
       vi.spyOn(db, "getByIds").mockImplementation(async () => {
         await new Promise((r) => setTimeout(r, 20));
         return state.deleted ? [] : ([mockRow] as any);

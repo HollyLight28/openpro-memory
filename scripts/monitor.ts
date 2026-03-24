@@ -1,15 +1,15 @@
 #!/usr/bin/env bun
 /**
  * Memory Hybrid Monitor
- * 
+ *
  * Real-time dashboard for visualizing memory operations (Recall, Store, Summary).
  * Tails ~/.openclaw/memory/traces/thoughts.jsonl
  */
 
 import { watch } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { homedir } from "node:os";
+import { join } from "node:path";
 
 const LOG_FILE = join(homedir(), ".openclaw", "memory", "traces", "thoughts.jsonl");
 
@@ -55,7 +55,7 @@ async function processNewLines() {
 function renderEvent(ev: any) {
   const time = new Date(ev.timestamp).toLocaleTimeString();
   const action = ev.action.toUpperCase();
-  
+
   let color = BLUE;
   if (ev.action === "memory_store") color = GREEN;
   if (ev.action === "memory_recall") color = CYAN;
@@ -64,12 +64,12 @@ function renderEvent(ev: any) {
   if (ev.action.includes("error")) color = RED;
 
   console.log(`${GRAY}[${time}]${RESET} ${BOLD}${color}${action}${RESET} ${ev.message || ""}`);
-  
+
   if (ev.details) {
     if (ev.action === "memory_recall") {
       console.log(`   ${GRAY}Query: "${ev.details.query}"${RESET}`);
       ev.details.topResults?.forEach((r: any, i: number) => {
-        console.log(`   ${GRAY}#${i+1} [${r.score.toFixed(2)}] ${r.text}${RESET}`);
+        console.log(`   ${GRAY}#${i + 1} [${r.score.toFixed(2)}] ${r.text}${RESET}`);
       });
     } else if (ev.action === "memory_store") {
       console.log(`   ${GRAY}Cat: ${ev.details.category} | ID: ${ev.details.id}${RESET}`);
