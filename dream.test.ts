@@ -140,7 +140,7 @@ describe("DreamService (Safe Pulsing Brain)", () => {
     (clusterBySimilarity as any).mockReturnValue([[fact1, fact2]]);
     (mergeFactsBatch as any).mockResolvedValue(["Vova loves programming in TypeScript"]);
 
-    mockChat.complete.mockResolvedValue("YES"); 
+    mockChat.complete.mockResolvedValue("YES");
 
     mockGraph.findEdgesForTexts.mockImplementation(() => [
       { source: "vova", target: "typescript" },
@@ -149,7 +149,7 @@ describe("DreamService (Safe Pulsing Brain)", () => {
     await (dreamService as any).tick();
 
     expect(mergeFactsBatch).toHaveBeenCalled();
-    expect(mockDb.store).toHaveBeenCalled(); 
-    expect(mockDb.delete).toHaveBeenCalledTimes(2); 
+    expect(mockDb.store).toHaveBeenCalled();
+    expect(mockDb.delete).toHaveBeenCalledTimes(2);
   });
 });

@@ -7,7 +7,7 @@ describe("MemoryQueue", () => {
     const sequence: number[] = [];
 
     const task1 = async () => {
-      await new Promise(r => setTimeout(r, 50));
+      await new Promise((r) => setTimeout(r, 50));
       sequence.push(1);
     };
 
@@ -22,7 +22,7 @@ describe("MemoryQueue", () => {
     expect(sequence).toEqual([]);
 
     // Wait enough time for task1 + delay + task2
-    await new Promise(r => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 300));
 
     expect(sequence).toEqual([1, 2]);
   });
@@ -39,7 +39,7 @@ describe("MemoryQueue", () => {
       sequence.push("ok");
     });
 
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 100));
 
     expect(sequence).toEqual(["ok"]);
   });
@@ -52,7 +52,7 @@ describe("MemoryQueue", () => {
     const task = async () => {
       concurrentCount++;
       maxConcurrent = Math.max(maxConcurrent, concurrentCount);
-      await new Promise(r => setTimeout(r, 20));
+      await new Promise((r) => setTimeout(r, 20));
       concurrentCount--;
     };
 
@@ -60,7 +60,7 @@ describe("MemoryQueue", () => {
     queue.push("t2", task);
     queue.push("t3", task);
 
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 100));
 
     expect(maxConcurrent).toBe(1);
   });

@@ -168,16 +168,16 @@ As an open-source `OpenClaw` plugin, installation is simple:
 
 ### All Config Options
 
-| Option             | Default                      | Description                                                                         |
-| ------------------ | ---------------------------- | ----------------------------------------------------------------------------------- |
-| `embedding.apiKey` | _required_                   | API key (OpenAI or Google)                                                          |
-| `embedding.model`  | `gemini-embedding-002`       | Latest Google embedding model (768/3072 dims)                                       |
-| `chatModel`        | auto                         | LLM for graph/capture (auto: `gemini-3.1-flash-lite` or `gpt-4o-mini`)              |
-| `dbPath`           | `~/.openclaw/memory/lancedb` | Database path                                                                       |
-| `autoCapture`      | `true`                       | Auto-capture from conversations                                                     |
-| `autoRecall`       | `true`                       | Auto-inject memories into context                                                   |
-| `smartCapture`     | `true`                       | Use LLM for intelligent fact extraction                                             |
-| `captureMaxChars`  | `500`                        | Max message length for capture                                                      |
+| Option             | Default                      | Description                                                            |
+| ------------------ | ---------------------------- | ---------------------------------------------------------------------- |
+| `embedding.apiKey` | _required_                   | API key (OpenAI or Google)                                             |
+| `embedding.model`  | `gemini-embedding-002`       | Latest Google embedding model (768/3072 dims)                          |
+| `chatModel`        | auto                         | LLM for graph/capture (auto: `gemini-3.1-flash-lite` or `gpt-4o-mini`) |
+| `dbPath`           | `~/.openclaw/memory/lancedb` | Database path                                                          |
+| `autoCapture`      | `true`                       | Auto-capture from conversations                                        |
+| `autoRecall`       | `true`                       | Auto-inject memories into context                                      |
+| `smartCapture`     | `true`                       | Use LLM for intelligent fact extraction                                |
+| `captureMaxChars`  | `500`                        | Max message length for capture                                         |
 
 ## Tools
 
