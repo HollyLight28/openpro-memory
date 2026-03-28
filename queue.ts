@@ -1,5 +1,7 @@
 export interface QueueOptions {
   delayMs?: number;
+  /** Optional logger for error reporting (no silent failures) */
+  onError?: (name: string, error: unknown) => void;
 }
 
 /**
@@ -14,9 +16,15 @@ export class MemoryQueue {
   private queue: Array<{ name: string; task: () => Promise<void> }> = [];
   private processing = false;
   private delayMs: number;
+  private onError: (name: string, error: unknown) => void;
 
   constructor(options: QueueOptions = {}) {
     this.delayMs = options.delayMs ?? 1000;
+    this.onError =
+      options.onError ??
+      (() => {
+        /* Default to no-op if no handler provided, but plugins should provide one */
+      });
   }
 
   /**
@@ -25,9 +33,8 @@ export class MemoryQueue {
   push(name: string, task: () => Promise<void>): void {
     this.queue.push({ name, task });
     if (!this.processing) {
-      // Start processing in the background (no await)
-      this.processNext().catch(() => {
-        // Top-level catch for the background process
+      this.processNext().catch((err) => {
+        this.onError("queue-loop", err);
         this.processing = false;
       });
     }
@@ -46,32 +53,28 @@ export class MemoryQueue {
       return;
     }
 
-    const { task } = entry;
+    const { name, task } = entry;
 
     try {
       await task();
     } catch (err) {
-      // Silence is golden in background tasks, but we could log to tracer here
+      // Report error instead of swallowing it silently
+      this.onError(name, err);
     }
 
     if (this.delayMs > 0) {
       await new Promise((r) => setTimeout(r, this.delayMs));
     }
 
-    // Continue to next task
     return this.processNext();
   }
 
-  /**
-   * Returns current queue size (number of pending tasks)
-   */
+  /** Returns current queue size (number of pending tasks) */
   get size(): number {
     return this.queue.length;
   }
 
-  /**
-   * Returns true if a task is currently being processed
-   */
+  /** Returns true if a task is currently being processed */
   get isWorking(): boolean {
     return this.processing;
   }

@@ -1,25 +1,29 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 import type { WorkingMemoryBuffer } from "./buffer.js";
 import { generateMemorySummary } from "./capture.js";
+import type { ChatModel } from "./chat.js";
+import type { MemoryConfig } from "./config.js";
 import { clusterBySimilarity, mergeFacts } from "./consolidate.js";
 import type { MemoryDB } from "./database.js";
 import type { Embeddings } from "./embeddings.js";
 import type { GraphDB } from "./graph.js";
+import { TaskPriority } from "./limiter.js";
 import { hybridScore } from "./recall.js";
 import { generateReflection } from "./reflection.js";
-import { tracer } from "./tracer.js";
+import type { MemoryTracer } from "./tracer.js";
 
 export interface CliDeps {
   db: MemoryDB;
   embeddings: Embeddings;
   graphDB: GraphDB;
   workingMemory: WorkingMemoryBuffer;
-  chatModel: any;
-  cfg: any;
+  chatModel: ChatModel;
+  tracer: MemoryTracer;
+  cfg: MemoryConfig;
 }
 
 export function registerCli(api: OpenClawPluginApi, deps: CliDeps) {
-  const { db, embeddings, graphDB, workingMemory, chatModel, cfg } = deps;
+  const { db, embeddings, graphDB, workingMemory, chatModel, tracer, cfg } = deps;
 
   api.registerCli(
     ({ program }) => {
@@ -248,7 +252,7 @@ export function registerCli(api: OpenClawPluginApi, deps: CliDeps) {
                   )
                 : 0;
 
-            const vector = await embeddings.embed(merged);
+            const vector = await embeddings.embed(merged, TaskPriority.LOW);
             const summary = await generateMemorySummary(merged, chatModel);
 
             await db.store({
@@ -297,6 +301,7 @@ export function registerCli(api: OpenClawPluginApi, deps: CliDeps) {
               happenedAt: m.happenedAt,
             })),
             chatModel,
+            TaskPriority.NORMAL,
           );
 
           console.log(`📝 Summary:\n${result.summary}\n`);

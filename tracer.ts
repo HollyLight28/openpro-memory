@@ -1,4 +1,4 @@
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdir, stat, rename } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -10,25 +10,44 @@ export interface TraceEvent {
   error?: string;
 }
 
+export interface Logger {
+  info(msg: string): void;
+  warn(msg: string): void;
+  error(msg: string): void;
+}
+
 export class MemoryTracer {
   private readonly logFile: string;
-  private initPromise: Promise<void> | null = null;
   private writeQueue: Promise<void> = Promise.resolve();
+  private logger?: Logger;
 
-  constructor(customPath?: string) {
+  constructor(options: { customPath?: string; logger?: Logger } = {}) {
+    const { customPath, logger } = options;
+    this.logger = logger;
     // Standardizing on ~/.openclaw for runtime data out of source tree
     this.logFile = customPath || join(homedir(), ".openclaw", "memory", "traces", "thoughts.jsonl");
   }
 
-  private async ensureDir(): Promise<void> {
-    if (!this.initPromise) {
-      this.initPromise = mkdir(dirname(this.logFile), { recursive: true })
-        .then(() => {}) // Normalize Promise<string | undefined> to Promise<void>
-        .catch((err) => {
-          console.warn(`[memory-hybrid:tracer] Failed to create trace directory:`, err);
-        });
+  private async append(path: string, line: string): Promise<void> {
+    try {
+      await mkdir(dirname(path), { recursive: true });
+
+      // Basic log rotation (10MB limit)
+      try {
+        const stats = await stat(path);
+        if (stats.size > 10 * 1024 * 1024) {
+          await rename(path, `${path}.old`);
+        }
+      } catch (e) {
+        // File doesn't exist, ignore
+      }
+
+      await appendFile(path, line + "\n", "utf-8");
+    } catch (err) {
+      if (this.logger) {
+        this.logger.warn(`[memory-hybrid][tracer] Failed to write log: ${err}`);
+      }
     }
-    return this.initPromise;
   }
 
   /**
@@ -44,12 +63,7 @@ export class MemoryTracer {
 
     // Fire and forget, but queue writes to avoid race conditions
     this.writeQueue = this.writeQueue.then(async () => {
-      try {
-        await this.ensureDir();
-        await appendFile(this.logFile, JSON.stringify(event) + "\n", "utf-8");
-      } catch (err) {
-        console.warn(`[memory-hybrid:tracer] Failed to write trace:`, err);
-      }
+      await this.append(this.logFile, JSON.stringify(event));
     });
   }
 
@@ -108,6 +122,3 @@ export class MemoryTracer {
     return this.writeQueue;
   }
 }
-
-// Singleton for easy global imports
-export const tracer = new MemoryTracer();

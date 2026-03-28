@@ -60,6 +60,7 @@
             "enum": [
               "gemini-embedding-001",
               "gemini-embedding-2-preview",
+              "text-embedding-004",
               "text-embedding-3-small",
               "text-embedding-3-large"
             ]

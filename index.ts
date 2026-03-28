@@ -15,8 +15,10 @@ import { DreamService } from "./dream.js";
 import { Embeddings, vectorDimsForModel } from "./embeddings.js";
 import { GraphDB } from "./graph.js";
 import { registerHooks } from "./hooks.js";
+import { ApiRateLimiter } from "./limiter.js";
 import { ConversationStack } from "./stack.js";
 import { registerTools } from "./tools.js";
+import { MemoryTracer } from "./tracer.js";
 
 const memoryPlugin = {
   id: "memory-hybrid",
@@ -30,22 +32,36 @@ const memoryPlugin = {
     const resolvedDbPath = api.resolvePath(cfg.dbPath);
     const vectorDim = cfg.embedding.outputDimensionality ?? vectorDimsForModel(cfg.embedding.model);
 
-    // 1. Initialize Core Engines
-    const db = new MemoryDB(resolvedDbPath, vectorDim);
+    // 1. Initialize Tracing & Logging
+    const tracer = new MemoryTracer({ logger: api.logger });
+
+    const limiter = new ApiRateLimiter({
+      minDelayMs: 2000,
+      maxRequestsPerMinute: 15,
+    });
+
+    const db = new MemoryDB(resolvedDbPath, vectorDim, tracer, api.logger);
     const embeddings = new Embeddings(
       cfg.embedding.apiKey,
       cfg.embedding.model,
       cfg.embedding.outputDimensionality,
+      limiter,
+      api.logger,
     );
-    const chatModel = new ChatModel(cfg.chatApiKey, cfg.chatModel, cfg.chatProvider);
-    const graphDB = new GraphDB(resolvedDbPath);
+    const chatModel = new ChatModel(cfg.chatApiKey, cfg.chatModel, cfg.chatProvider, tracer, api.logger, limiter);
+    const graphDB = new GraphDB(resolvedDbPath, tracer, api.logger);
 
     // 2. Initialize State Buffers
     const workingMemory = new WorkingMemoryBuffer(50, 0.7, 3);
     const conversationStack = new ConversationStack(30);
 
+    const bufferPath = api.resolvePath("working_memory.jsonl");
+    workingMemory.load(bufferPath, api.logger).catch((err) => {
+      api.logger.warn(`memory-hybrid: load working memory failed: ${String(err)}`);
+    });
+
     // 3. Initialize Shared Services
-    const dreamService = new DreamService(db, chatModel, embeddings, graphDB, api);
+    const dreamService = new DreamService(api, db, embeddings, graphDB, chatModel, tracer);
 
     // 4. Load Graph (Background)
     graphDB.load().catch((err) => {
@@ -62,11 +78,12 @@ const memoryPlugin = {
       workingMemory,
       conversationStack,
       dreamService,
+      tracer,
     };
 
     registerTools(api, deps);
     registerCli(api, deps);
-    registerHooks(api, deps);
+    const hooksHandle = registerHooks(api, deps);
 
     // 6. Define Plugin Service
     api.registerService({
@@ -77,6 +94,13 @@ const memoryPlugin = {
       },
       stop: () => {
         dreamService.stop();
+        hooksHandle.cleanup();
+        workingMemory.save(bufferPath, api.logger).catch((err) => {
+          api.logger.warn(`memory-hybrid: save working memory failed: ${String(err)}`);
+        });
+        db.close().catch((err) => {
+          api.logger.warn(`memory-hybrid: db close failed: ${String(err)}`);
+        });
         api.logger.info("memory-hybrid: stopped");
       },
     });

@@ -20,6 +20,8 @@
 
 import { escapeMemoryForPrompt } from "./capture.js";
 import type { ChatModel } from "./chat.js";
+import { TaskPriority } from "./limiter.js";
+import { type Logger } from "./tracer.js";
 
 // ============================================================================
 // Types
@@ -59,8 +61,11 @@ export interface MemoryFact {
 export async function generateReflection(
   memories: MemoryFact[],
   chatModel: ChatModel,
+  priority = TaskPriority.LOW,
+  logger?: Logger,
 ): Promise<ReflectionResult> {
   if (memories.length < 5) {
+    if (logger) logger.info("Not enough memories yet. Need at least 5 facts to generate a reflection.");
     return {
       summary: "Not enough memories yet. Need at least 5 facts to generate a reflection.",
       patterns: [],
@@ -136,6 +141,7 @@ Return ONLY valid JSON:
     const response = await chatModel.complete(
       [{ role: "user", content: prompt }],
       true, // JSON mode
+      priority,
     );
 
     const cleanJson = response
@@ -161,10 +167,9 @@ Return ONLY valid JSON:
       generatedAt: Date.now(),
     };
   } catch (error) {
-    console.warn(
-      `[memory-hybrid][reflection] generateReflection JSON parse failed`,
-      error instanceof Error ? error.message : String(error),
-    );
+    if (logger) {
+      logger.warn(`[memory-hybrid][reflection] generateReflection JSON parse failed: ${error}`);
+    }
     return {
       summary: "Reflection failed (LLM error). Try again later.",
       patterns: [],

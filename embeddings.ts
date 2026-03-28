@@ -6,7 +6,9 @@
  */
 
 import OpenAI from "openai";
+import { ApiRateLimiter, TaskPriority } from "./limiter.js";
 import { withRetry } from "./utils.js";
+import { type Logger } from "./tracer.js";
 
 // Dimension map for supported models
 export const EMBEDDING_DIMENSIONS: Record<string, number> = {
@@ -30,11 +32,7 @@ export function vectorDimsForModel(model: string): number {
 export type EmbeddingProvider = "openai" | "google";
 
 export function detectProvider(model: string): EmbeddingProvider {
-  if (
-    model.startsWith("text-embedding-3") ||
-    model.startsWith("text-embedding-ada") ||
-    model === "text-embedding-004"
-  ) {
+  if (model.startsWith("text-embedding-3") || model.startsWith("text-embedding-ada")) {
     return "openai";
   }
   return "google";
@@ -50,7 +48,9 @@ export class Embeddings {
   constructor(
     private readonly apiKey: string,
     private readonly model: string,
-    private readonly outputDimensionality?: number,
+    private readonly outputDim?: number,
+    private readonly limiter?: ApiRateLimiter,
+    private readonly logger?: Logger,
   ) {
     this.provider = detectProvider(model);
     if (this.provider === "openai") {
@@ -58,7 +58,7 @@ export class Embeddings {
     }
   }
 
-  async embed(text: string): Promise<number[]> {
+  async embed(text: string, priority = TaskPriority.HIGH): Promise<number[]> {
     // Check cache first (LRU: delete+re-insert moves key to end of Map order)
     const cacheKey = `${this.model}:${text}`;
     if (this.cache.has(cacheKey)) {
@@ -70,11 +70,24 @@ export class Embeddings {
 
     let vector: number[];
     if (this.provider === "openai") {
-      vector = await this.embedOpenAI(text);
+      if (this.limiter) {
+        vector = await this.limiter.execute(() => this.embedOpenAI(text), priority, "embed_single");
+      } else {
+        vector = await this.embedOpenAI(text);
+      }
     } else {
       // Pass dimension if supported (Matryoshka)
-      const dims = this.outputDimensionality ?? EMBEDDING_DIMENSIONS[this.model];
-      vector = await this.embedGoogle(text, dims);
+      const dims = this.outputDim ?? EMBEDDING_DIMENSIONS[this.model];
+
+      if (this.limiter) {
+        vector = await this.limiter.execute(
+          () => this.embedGoogle(text, dims),
+          priority,
+          "embed_single",
+        );
+      } else {
+        vector = await this.embedGoogle(text, dims);
+      }
     }
 
     // Update cache
@@ -88,7 +101,7 @@ export class Embeddings {
     return vector;
   }
 
-  async embedBatch(texts: string[]): Promise<number[][]> {
+  async embedBatch(texts: string[], priority = TaskPriority.NORMAL): Promise<number[][]> {
     if (texts.length === 0) return [];
 
     // Simple caching for batch: only embed what we need
@@ -112,10 +125,26 @@ export class Embeddings {
     if (neededTexts.length > 0) {
       let newVectors: number[][];
       if (this.provider === "openai") {
-        newVectors = await this.embedOpenAIBatch(neededTexts);
+        if (this.limiter) {
+          newVectors = await this.limiter.execute(
+            () => this.embedOpenAIBatch(neededTexts),
+            priority,
+            "embed_batch",
+          );
+        } else {
+          newVectors = await this.embedOpenAIBatch(neededTexts);
+        }
       } else {
-        const dims = this.outputDimensionality ?? EMBEDDING_DIMENSIONS[this.model];
-        newVectors = await this.embedGoogleBatch(neededTexts, dims);
+        const dims = this.outputDim ?? EMBEDDING_DIMENSIONS[this.model];
+        if (this.limiter) {
+          newVectors = await this.limiter.execute(
+            () => this.embedGoogleBatch(neededTexts, dims),
+            priority,
+            "embed_batch",
+          );
+        } else {
+          newVectors = await this.embedGoogleBatch(neededTexts, dims);
+        }
       }
 
       for (let i = 0; i < neededTexts.length; i++) {
@@ -143,7 +172,7 @@ export class Embeddings {
   }
 
   private async embedOpenAIBatch(texts: string[]): Promise<number[][]> {
-    return this.withRetry(async () => {
+    return this.executeWithRetry(async () => {
       const response = await this.openai!.embeddings.create({
         model: this.model,
         input: texts,
@@ -156,7 +185,7 @@ export class Embeddings {
     return this.executeWithRetry(async () => {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:embedContent?key=${this.apiKey}`;
 
-      const body: any = {
+      const body: Record<string, unknown> = {
         model: `models/${this.model}`,
         content: { parts: [{ text }] },
         taskType: "RETRIEVAL_DOCUMENT",
@@ -175,13 +204,19 @@ export class Embeddings {
       if (!response.ok) {
         const errorBody = await response.text();
         const sanitizedError = errorBody.replace(this.apiKey, "[REDACTED]");
+        if (this.logger) this.logger.error(`[memory-hybrid][embeddings] Google Embedding API error (${response.status}): ${sanitizedError}`);
         throw new Error(`Google Embedding API error (${response.status}): ${sanitizedError}`);
       }
 
-      const data = (await response.json()) as { embedding?: { values?: number[] } };
+      const data = (await response.json()) as { embedding?: { values?: number[] }, error?: { message: string } };
+      if (data.error) {
+        if (this.logger) this.logger.error(`[memory-hybrid][embeddings] Google Embedding API error: ${data.error.message}`);
+        throw new Error(`Google Embedding API: ${data.error.message}`);
+      }
       const values = data?.embedding?.values;
 
       if (!values || !Array.isArray(values)) {
+        if (this.logger) this.logger.error(`[memory-hybrid][embeddings] Unexpected Google Embedding API response: ${JSON.stringify(data)}`);
         throw new Error(`Unexpected Google Embedding API response: ${JSON.stringify(data)}`);
       }
       return values;
@@ -193,7 +228,7 @@ export class Embeddings {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:batchEmbedContents?key=${this.apiKey}`;
 
       const requests = texts.map((text) => {
-        const req: any = {
+        const req: Record<string, unknown> = {
           model: `models/${this.model}`,
           content: { parts: [{ text }] },
           taskType: "RETRIEVAL_DOCUMENT",
@@ -213,10 +248,15 @@ export class Embeddings {
       if (!response.ok) {
         const errorBody = await response.text();
         const sanitizedError = errorBody.replace(this.apiKey, "[REDACTED]");
+        if (this.logger) this.logger.error(`[memory-hybrid][embeddings] Google Batch Embedding API error (${response.status}): ${sanitizedError}`);
         throw new Error(`Google Batch Embedding API error (${response.status}): ${sanitizedError}`);
       }
 
-      const data = (await response.json()) as { embeddings?: Array<{ values?: number[] }> };
+      const data = (await response.json()) as { embeddings?: Array<{ values?: number[] }>, error?: { message: string } };
+      if (data.error) {
+        if (this.logger) this.logger.error(`[memory-hybrid][embeddings] Google Batch Embedding API error: ${data.error.message}`);
+        throw new Error(`Google Batch Embedding API: ${data.error.message}`);
+      }
       const embeddings = data?.embeddings;
 
       if (!embeddings || !Array.isArray(embeddings)) {

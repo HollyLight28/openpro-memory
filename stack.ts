@@ -21,7 +21,8 @@
 
 import { MIN_MESSAGE_LENGTH } from "./capture.js";
 import { type ChatModel } from "./chat.js";
-import { tracer } from "./tracer.js";
+import { TaskPriority } from "./limiter.js";
+import { type MemoryTracer, type Logger } from "./tracer.js";
 
 /** A single compressed conversation turn */
 export interface CompressedTurn {
@@ -71,7 +72,13 @@ export class ConversationStack {
    * @param assistantMessage - The assistant's response
    * @param chatModel - The LLM model used for compression
    */
-  async push(userMessage: string, assistantMessage: string, chatModel: ChatModel): Promise<void> {
+  async push(
+    userMessage: string,
+    assistantMessage: string,
+    chatModel: ChatModel,
+    tracer: MemoryTracer,
+    logger?: Logger,
+  ): Promise<void> {
     // Skip trivial messages
     if (userMessage.length < MIN_MESSAGE_LENGTH && assistantMessage.length < MIN_MESSAGE_LENGTH) {
       return;
@@ -83,7 +90,7 @@ export class ConversationStack {
     });
 
     if (this.pendingTurns.length >= this.batchSize) {
-      await this.flush(chatModel);
+      await this.flush(chatModel, tracer, logger);
     }
   }
 
@@ -91,7 +98,7 @@ export class ConversationStack {
    * Compress all pending turns into a single summary block.
    * This drastically reduces API RPM by consolidating multiple turns.
    */
-  async flush(chatModel: ChatModel): Promise<void> {
+  async flush(chatModel: ChatModel, tracer: MemoryTracer, logger?: Logger): Promise<void> {
     if (this.pendingTurns.length === 0) return;
 
     try {
@@ -107,7 +114,11 @@ ${turnsText}
 
 Return ONLY the compressed summary, nothing else.`;
 
-      let summary = await chatModel.complete([{ role: "user", content: prompt }], false);
+      let summary = await chatModel.complete(
+        [{ role: "user", content: prompt }],
+        false,
+        TaskPriority.NORMAL,
+      );
       summary = summary.trim().slice(0, 400); // Safety cap
 
       tracer.traceSummary(this.pendingTurns.length, summary);

@@ -1,30 +1,27 @@
 import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import {
-  escapeMemoryForPrompt,
-  formatRadarContext,
-  generateMemorySummary,
-  extractGraphFromText,
-} from "./capture.js";
+import { escapeMemoryForPrompt, formatRadarContext, generateMemorySummary } from "./capture.js";
 import type { ChatModel } from "./chat.js";
-import { MEMORY_CATEGORIES, type MemoryCategory } from "./config.js";
+import { MEMORY_CATEGORIES, type MemoryCategory, type MemoryConfig } from "./config.js";
 import { MemoryDB } from "./database.js";
 import type { Embeddings } from "./embeddings.js";
-import type { GraphDB } from "./graph.js";
+import { GraphDB, extractGraphFromText } from "./graph.js";
+import { TaskPriority } from "./limiter.js";
 import { hybridScore, getGraphEnrichment } from "./recall.js";
 import { generateReflection } from "./reflection.js";
-import { tracer } from "./tracer.js";
+import { type MemoryTracer } from "./tracer.js";
 
 export interface ToolDeps {
   db: MemoryDB;
   embeddings: Embeddings;
   chatModel: ChatModel;
   graphDB: GraphDB;
-  cfg: any;
+  tracer: MemoryTracer;
+  cfg: MemoryConfig;
 }
 
 export function registerTools(api: OpenClawPluginApi, deps: ToolDeps) {
-  const { db, embeddings, chatModel, graphDB, cfg } = deps;
+  const { db, embeddings, chatModel, graphDB, tracer, cfg } = deps;
 
   // ======================================================================
   // Tool: memory_recall (Sonar — Stage 1)
@@ -127,6 +124,7 @@ export function registerTools(api: OpenClawPluginApi, deps: ToolDeps) {
 
         let actionmsg = "created";
         let replacedId: string | undefined;
+        let toDeleteId: string | undefined;
 
         if (existing.length > 0) {
           const topMatch = existing[0];
@@ -151,8 +149,7 @@ export function registerTools(api: OpenClawPluginApi, deps: ToolDeps) {
               };
             }
             if (analysis.action === "update") {
-              await db.delete(topMatch.entry.id);
-              replacedId = topMatch.entry.id;
+              toDeleteId = topMatch.entry.id;
               actionmsg = "updated";
             }
           } catch (err) {
@@ -160,7 +157,7 @@ export function registerTools(api: OpenClawPluginApi, deps: ToolDeps) {
           }
         }
 
-        const summary = await generateMemorySummary(text, chatModel);
+        const summary = await generateMemorySummary(text, chatModel, api.logger);
         const entry = await db.store({
           text,
           vector,
@@ -173,9 +170,15 @@ export function registerTools(api: OpenClawPluginApi, deps: ToolDeps) {
           emotionScore: 0,
         });
 
+        // Now safe to delete old one (Store BEFORE Delete pattern)
+        if (toDeleteId) {
+          await db.delete(toDeleteId);
+          replacedId = toDeleteId;
+        }
+
         tracer.traceStore(text, category, entry.id);
 
-        extractGraphFromText(text, chatModel)
+        extractGraphFromText(text, chatModel, TaskPriority.LOW, tracer, api.logger)
           .then(async (graph) => {
             if (graph.nodes.length > 0 || graph.edges.length > 0) {
               await graphDB.modify(() => {
@@ -302,6 +305,7 @@ export function registerTools(api: OpenClawPluginApi, deps: ToolDeps) {
             happenedAt: m.happenedAt,
           })),
           chatModel,
+          TaskPriority.NORMAL,
         );
 
         const text = [

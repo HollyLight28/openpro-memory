@@ -14,12 +14,13 @@
 
 import type { ChatModel } from "./chat.js";
 import type { MemoryCategory } from "./config.js";
+import { TaskPriority } from "./limiter.js";
 
 export const DEFAULT_CAPTURE_MAX_CHARS = 1000;
 /** Minimum message length to be worth remembering or summarizing */
 export const MIN_MESSAGE_LENGTH = 10;
 
-import { tracer } from "./tracer.js";
+import { type MemoryTracer, type Logger } from "./tracer.js";
 
 // ============================================================================
 // Rule-based capture (from original memory-lancedb)
@@ -39,12 +40,14 @@ const MEMORY_TRIGGERS = [
 ];
 
 const PROMPT_INJECTION_PATTERNS = [
-  /ignore\s+(all\s+|any\s+|previous\s+|above\s+|prior\s+)*instructions/i,
-  /do not follow (the )?(system|developer)/i,
+  /ignore\s+(all\s+|any\s+|previous\s+|above\s+|prior\s+|system\s+)*instructions/i,
+  /do not\s+(follow|obey)\s+(the\s+)?(system|developer|hidden|prior)/i,
   /system prompt/i,
   /developer message/i,
-  /<\s*(system|assistant|developer|tool|function|relevant-memories)\b/i,
-  /\b(run|execute|call|invoke)\b.{0,40}\b(tool|command)\b/i,
+  /<\s*(system|assistant|developer|tool|function|relevant-memories|star-map)\b/i,
+  /\b(run|execute|call|invoke|start)\b.{0,60}\b(tool|command|script|shell)\b/i,
+  /stop\s+current\s+task/i,
+  /you\s+must\s+now\s+act\s+as/i,
 ];
 
 const PROMPT_ESCAPE_MAP: Record<string, string> = {
@@ -62,9 +65,13 @@ export function looksLikePromptInjection(text: string): boolean {
   return PROMPT_INJECTION_PATTERNS.some((p) => p.test(normalized));
 }
 
-/** Escape special chars in memory text before injecting into prompt */
+/**
+ * Escape chars in memory text before injecting into prompt.
+ * Only neutralize angle brackets to prevent XML tag injection into
+ * star-map/relevant-memories blocks. Other chars are safe for LLM context.
+ */
 export function escapeMemoryForPrompt(text: string): string {
-  return text.replace(/[&<>"']/g, (char) => PROMPT_ESCAPE_MAP[char] ?? char);
+  return text.replace(/</g, "‹").replace(/>/g, "›");
 }
 
 /** Format memories for injection into LLM context */
@@ -162,6 +169,9 @@ export async function smartCapture(
   userMessage: string,
   assistantMessage: string | undefined,
   chatModel: ChatModel,
+  tracer: MemoryTracer,
+  logger?: Logger,
+  priority = TaskPriority.NORMAL,
 ): Promise<SmartCaptureResult> {
   const today = new Date().toISOString().split("T")[0];
   // Use JSON.stringify for robust escaping (handles newlines, quotes, special chars)
@@ -209,7 +219,7 @@ Rules:
 - If nothing worth remembering, return {"should_store": false, "facts": []}`;
 
   try {
-    const response = await chatModel.complete([{ role: "user", content: prompt }], true);
+    const response = await chatModel.complete([{ role: "user", content: prompt }], true, priority);
 
     const cleanJson = response
       .replace(/```json\s*/g, "")
@@ -305,10 +315,9 @@ Rules:
     };
   } catch (error) {
     // Smart capture is best-effort — fall back to rule-based
-    console.warn(
-      `[memory-hybrid][capture] smartCapture JSON parse failed`,
-      error instanceof Error ? error.message : String(error),
-    );
+    if (logger) {
+      logger.warn(`[memory-hybrid][capture] smartCapture failed: ${error}`);
+    }
     return { shouldStore: false, facts: [] };
   }
 }
@@ -321,7 +330,12 @@ Rules:
  * Generates a concise summary (max 150 chars) of a longer memory text.
  * Used for building the "Star Map" (Context Radar) without overflowing tokens.
  */
-export async function generateMemorySummary(text: string, chatModel: ChatModel): Promise<string> {
+export async function generateMemorySummary(
+  text: string,
+  chatModel: ChatModel,
+  logger?: Logger,
+  priority = TaskPriority.LOW,
+): Promise<string> {
   if (text.length < 100) return text; // Too short to summarize, keep it as is.
 
   const prompt = `Condense the following memory into a single short sentence (maximum 150 characters) that captures its core meaning. Focus on the factual or emotional essence.
@@ -331,10 +345,10 @@ Original memory: "${text.slice(0, 5000)}" // Truncate if insanely long
 Return ONLY the summary text, nothing else.`;
 
   try {
-    const response = await chatModel.complete([{ role: "user", content: prompt }], false);
+    const response = await chatModel.complete([{ role: "user", content: prompt }], false, priority);
     return response.trim().slice(0, 150);
   } catch (error) {
-    console.warn(`[memory-hybrid][summary] Failed to generate summary:`, String(error));
+    if (logger) logger.warn(`[memory-hybrid][summary] Failed to generate summary: ${error}`);
     return text.slice(0, 150) + "..."; // Fallback
   }
 }

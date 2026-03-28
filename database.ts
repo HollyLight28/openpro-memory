@@ -3,7 +3,8 @@ import type * as LanceDB from "@lancedb/lancedb";
 import type { MemoryCategory } from "./config.js";
 import type { GraphDB } from "./graph.js";
 import type { MemoryEntry } from "./recall.js";
-import { tracer } from "./tracer.js";
+import { MemoryTracer, type Logger } from "./tracer.js";
+import { withRetry } from "./utils.js";
 
 // ============================================================================
 // LanceDB Lazy Loader
@@ -61,7 +62,18 @@ export class MemoryDB {
   constructor(
     private readonly dbPath: string,
     private readonly vectorDim: number,
+    private readonly tracer: MemoryTracer,
+    private readonly logger: Logger,
   ) {}
+
+  /** Close the database connection and release resources */
+  async close(): Promise<void> {
+    if (this.db) {
+      this.db = null;
+      this.table = null;
+      this.initPromise = null;
+    }
+  }
 
   private async ensureInitialized(): Promise<void> {
     if (this.table) return;
@@ -113,6 +125,9 @@ export class MemoryDB {
       ]);
       await this.table.delete('id = "__schema__"');
       this.availableColumns = new Set(MemoryDB.ALL_COLUMNS);
+
+      // Create FTS Index for keyword search
+      await this.table.createIndex("text");
     }
   }
 
@@ -131,7 +146,7 @@ export class MemoryDB {
     this.availableColumns = new Set(Object.keys(probeRows[0]));
     const missing = MemoryDB.ALL_COLUMNS.filter((c) => !this.availableColumns.has(c));
     if (missing.length > 0) {
-      console.warn(
+      this.logger.warn(
         `[memory-hybrid] DB schema is missing columns: ${missing.join(", ")}. ` +
           `Queries will skip these fields. Delete the lancedb folder to recreate with full schema.`,
       );
@@ -343,18 +358,12 @@ export class MemoryDB {
     // Phase 3: Fetch Associative Memories
     const associativeResults: MemorySearchResult[] = [];
 
-    // Construct a compatible WHERE clause
-    const conditions = Array.from(discoveredEntities).map((e) => {
-      const safeE = e.replace(/['%_]/g, "");
-      return `text LIKE '%${safeE}%'`;
-    });
-
-    if (conditions.length === 0) return initialResults;
-
-    const whereClause = conditions.join(" OR ");
-
     await this.ensureInitialized();
-    const matchedMemories = await this.table!.query().where(whereClause).limit(10).toArray();
+
+    // Use FTS search instead of LIKE for much better performance and recall
+    const matchedMemories = await this.table!.search(Array.from(discoveredEntities).join(" "))
+      .limit(10)
+      .toArray();
 
     for (const m of matchedMemories) {
       const entry = m as unknown as MemoryEntry;
@@ -488,7 +497,9 @@ export class MemoryDB {
 
       for (const row of existingRows) {
         const id = row.id;
-        const delta = this.recallCountDeltas.get(id) ?? 0;
+        // BUG 2 FIX: Use snapshotted delta from entriesToFlush
+        const deltaTuple = entriesToFlush.find(([eid]) => eid === id);
+        const delta = deltaTuple ? deltaTuple[1] : 0;
         if (delta <= 0) continue;
 
         const updatedRow = {
@@ -496,8 +507,8 @@ export class MemoryDB {
           recallCount: (row.recallCount ?? 0) + delta,
         };
 
-        delete (updatedRow as any)._distance;
-        delete (updatedRow as any)["vector.isValid"];
+        delete (updatedRow as Record<string, unknown>)._distance;
+        delete (updatedRow as Record<string, unknown>)["vector.isValid"];
 
         updatedRows.push(updatedRow as unknown as Record<string, unknown>);
         successfullyFlushedIds.push(id);
@@ -505,9 +516,26 @@ export class MemoryDB {
 
       if (updatedRows.length === 0) return 0;
 
+      // Store-Before-Delete pattern: add updated rows first, then delete old ones.
+      // If crash occurs after add but before delete, we get duplicates (recoverable)
+      // instead of data loss (unrecoverable).
       const idList = successfullyFlushedIds.map((id) => `'${id}'`).join(", ");
-      await this.table!.delete(`id IN (${idList})`);
+
+      // Step 1: Add updated rows (safe: duplicates are recoverable)
       await this.safeAdd(updatedRows);
+
+      // Step 2: Delete old rows (safe: new data already persisted)
+      try {
+        await this.table!.delete(`id IN (${idList})`);
+      } catch (deleteErr) {
+        // Old rows remain alongside new ones — duplicates, but no data loss.
+        // Next flush cycle will resolve this naturally.
+        this.tracer.trace(
+          "flush_recall_delete_warning",
+          { ids: successfullyFlushedIds, error: String(deleteErr) },
+          `Warning: old rows not deleted after update. Duplicates may exist until next compaction.`,
+        );
+      }
 
       for (const [id, countAtStart] of entriesToFlush) {
         if (!successfullyFlushedIds.includes(id)) continue;
@@ -521,7 +549,7 @@ export class MemoryDB {
         }
       }
 
-      tracer.trace(
+      this.tracer.trace(
         "flush_recall_counts",
         { count: updatedRows.length },
         `Persisted recall counts for ${updatedRows.length} memories.`,
@@ -529,10 +557,14 @@ export class MemoryDB {
 
       return updatedRows.length;
     } catch (error) {
-      console.warn(
-        `[memory-hybrid] flushRecallCounts batch failed:`,
-        error instanceof Error ? error.message : String(error),
-      );
+      const msg = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`[memory-hybrid] flushRecallCounts batch failed: ${msg}`);
+
+      // If it's a critical data loss risk, bubble it up (Disk Full or explicit CRITICAL)
+      if (msg.includes("CRITICAL") || msg.includes("Disk Full")) {
+        throw new Error(`[memory-hybrid] CRITICAL DATA LOSS RISK: ${msg}`);
+      }
+
       return 0;
     }
   }

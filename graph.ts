@@ -13,10 +13,11 @@
  * - recall(): enriches search results with graph connections
  */
 
-import { readFile, writeFile, appendFile, access, mkdir } from "node:fs/promises";
+import { readFile, writeFile, appendFile, access, mkdir, rename } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import type { ChatModel } from "./chat.js";
-import { tracer } from "./tracer.js";
+import { TaskPriority } from "./limiter.js";
+import { MemoryTracer, type Logger } from "./tracer.js";
 
 // ============================================================================
 // Types
@@ -47,6 +48,8 @@ interface GraphData {
 export class GraphDB {
   public nodes: Map<string, GraphNode> = new Map();
   public edges: GraphEdge[] = [];
+  /** Adjacency list for O(1) neighbor lookups: nodeId -> Set of edge indices */
+  private adjacencyList: Map<string, Set<number>> = new Map();
   /** Set of composite keys for O(1) edge dedup: "source|target|relation" */
   private edgeKeys: Set<string> = new Set();
   private filePath: string;
@@ -58,10 +61,17 @@ export class GraphDB {
   private dirtyNodes: Set<string> = new Set();
   private savedEdgeCount = 0;
 
-  constructor(basePath: string) {
+  private tracer: MemoryTracer;
+  private logger: Logger;
+
+  constructor(basePath: string, tracer: MemoryTracer, logger: Logger) {
+    this.tracer = tracer;
+    this.logger = logger;
     // Save graph.jsonl next to the lancedb folder
     this.filePath = join(dirname(basePath), "graph.jsonl");
     this.legacyJsonPath = join(dirname(basePath), "graph.json");
+    this.edgeKeys = new Set();
+    this.adjacencyList = new Map();
   }
 
   /**
@@ -109,7 +119,10 @@ export class GraphDB {
               const key = `${edge.source}|${edge.target}|${edge.relation}`;
               if (!this.edgeKeys.has(key)) {
                 this.edgeKeys.add(key);
+                const edgeIndex = this.edges.length;
                 this.edges.push(edge);
+                this.addToAdjacencyList(edge.source, edgeIndex);
+                this.addToAdjacencyList(edge.target, edgeIndex);
               }
             }
           } catch {
@@ -117,9 +130,13 @@ export class GraphDB {
           }
         }
         this.savedEdgeCount = this.edges.length;
+        this.tracer.traceGraph(this.nodeCount, this.edgeCount);
         this.loaded = true;
         return;
-      } catch {
+      } catch (err) {
+        if ((err as any).code !== "ENOENT") {
+          this.logger.warn(`[memory-hybrid][graph] Load failed: ${err}`);
+        }
         // JSONL doesn't exist — try legacy JSON migration
       }
 
@@ -136,7 +153,10 @@ export class GraphDB {
           const key = `${e.source}|${e.target}|${e.relation}`;
           if (!this.edgeKeys.has(key)) {
             this.edgeKeys.add(key);
+            const edgeIndex = this.edges.length;
             this.edges.push(e);
+            this.addToAdjacencyList(e.source, edgeIndex);
+            this.addToAdjacencyList(e.target, edgeIndex);
           }
         }
 
@@ -145,10 +165,13 @@ export class GraphDB {
         this.savedEdgeCount = 0;
         migrated = true;
 
-        console.warn(
+        this.logger.warn(
           `[memory-hybrid][graph] Migrated legacy graph.json → graph.jsonl (${this.nodes.size} nodes, ${this.edges.length} edges)`,
         );
-      } catch {
+      } catch (err) {
+        if ((err as any).code !== "ENOENT") {
+          this.logger.warn(`[memory-hybrid][graph] Legacy load failed: ${err}`);
+        }
         // No legacy file either — start fresh
       }
 
@@ -215,11 +238,17 @@ export class GraphDB {
       for (const edge of this.edges) {
         lines.push(JSON.stringify({ _t: "e", d: edge }));
       }
-      await writeFile(this.filePath, lines.join("\n") + "\n", "utf-8");
+      // Atomic write: tmp file then rename (prevents data loss on crash)
+      const tmpPath = this.filePath + ".tmp";
+      await writeFile(tmpPath, lines.join("\n") + "\n", "utf-8");
+      await rename(tmpPath, this.filePath);
       this.edgeKeys.clear();
-      for (const edge of this.edges) {
+      this.adjacencyList.clear();
+      this.edges.forEach((edge, index) => {
         this.edgeKeys.add(`${edge.source}|${edge.target}|${edge.relation}`);
-      }
+        this.addToAdjacencyList(edge.source, index);
+        this.addToAdjacencyList(edge.target, index);
+      });
       this.dirtyNodes.clear();
       this.savedEdgeCount = this.edges.length;
     });
@@ -238,8 +267,18 @@ export class GraphDB {
     const key = `${edge.source}|${edge.target}|${edge.relation}`;
     if (!this.edgeKeys.has(key)) {
       this.edgeKeys.add(key);
+      const edgeIndex = this.edges.length;
       this.edges.push(edge);
+      this.addToAdjacencyList(edge.source, edgeIndex);
+      this.addToAdjacencyList(edge.target, edgeIndex);
     }
+  }
+
+  private addToAdjacencyList(nodeId: string, edgeIndex: number): void {
+    if (!this.adjacencyList.has(nodeId)) {
+      this.adjacencyList.set(nodeId, new Set());
+    }
+    this.adjacencyList.get(nodeId)!.add(edgeIndex);
   }
 
   /**
@@ -257,7 +296,9 @@ export class GraphDB {
   /** Get all edges connected to a node */
   async getNeighbors(nodeId: string): Promise<GraphEdge[]> {
     return this.withLock(async () => {
-      return this.edges.filter((e) => e.source === nodeId || e.target === nodeId);
+      const indices = this.adjacencyList.get(nodeId);
+      if (!indices) return [];
+      return Array.from(indices).map((idx) => this.edges[idx]);
     });
   }
 
@@ -302,9 +343,14 @@ export class GraphDB {
    */
   getConnectedNodes(nodeId: string): string[] {
     const connected = new Set<string>();
-    for (const edge of this.edges) {
-      if (edge.source === nodeId) connected.add(edge.target);
-      if (edge.target === nodeId) connected.add(edge.source);
+    // O(1) lookup via adjacency list instead of O(N) full edge scan
+    const indices = this.adjacencyList.get(nodeId);
+    if (indices) {
+      for (const idx of indices) {
+        const edge = this.edges[idx];
+        if (edge.source === nodeId) connected.add(edge.target);
+        if (edge.target === nodeId) connected.add(edge.source);
+      }
     }
     return Array.from(connected);
   }
@@ -328,27 +374,24 @@ export class GraphDB {
     return this.withLock(async () => {
       const visitedNodes = new Set<string>(seedNodeIds);
       const collectedEdges: GraphEdge[] = [];
+      const collectedEdgeKeys = new Set<string>();
       let frontier = [...seedNodeIds];
 
       for (let hop = 0; hop < maxHops; hop++) {
         const nextFrontier: string[] = [];
 
         for (const nodeId of frontier) {
-          const neighbors = this.edges.filter((e) => e.source === nodeId || e.target === nodeId);
-          for (const edge of neighbors) {
-            // Avoid collecting duplicate edges
-            if (
-              !collectedEdges.some(
-                (e) =>
-                  e.source === edge.source &&
-                  e.target === edge.target &&
-                  e.relation === edge.relation,
-              )
-            ) {
+          const neighborIndices = this.adjacencyList.get(nodeId);
+          if (!neighborIndices) continue;
+          for (const edgeIdx of neighborIndices) {
+            const edge = this.edges[edgeIdx];
+            // O(1) duplicate check via Set instead of O(n) Array.some
+            const key = `${edge.source}|${edge.target}|${edge.relation}`;
+            if (!collectedEdgeKeys.has(key)) {
+              collectedEdgeKeys.add(key);
               collectedEdges.push(edge);
             }
 
-            // Discover new nodes
             const otherNode = edge.source === nodeId ? edge.target : edge.source;
             if (!visitedNodes.has(otherNode)) {
               visitedNodes.add(otherNode);
@@ -380,6 +423,9 @@ export class GraphDB {
 export async function extractGraphFromText(
   text: string,
   chatModel: ChatModel,
+  priority = TaskPriority.NORMAL,
+  tracer: MemoryTracer,
+  logger: Logger,
 ): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
   // Skip very short text — not enough for meaningful extraction
   if (text.length < 25) {
@@ -406,7 +452,7 @@ Rules:
 Text: "${JSON.stringify(text).slice(1, -1)}"`;
 
   try {
-    const response = await chatModel.complete([{ role: "user", content: prompt }], true);
+    const response = await chatModel.complete([{ role: "user", content: prompt }], true, priority);
 
     // Clean potential markdown wrapper
     const cleanJson = response
@@ -437,13 +483,13 @@ Text: "${JSON.stringify(text).slice(1, -1)}"`;
         try {
           data = JSON.parse(match[0]);
           tracer.trace("llm_graph_repair_success", {}, "Successfully rescued Graph JSON via regex");
-        } catch (e) {
+        } catch (err) {
           tracer.trace(
             "llm_graph_repair_fatal",
-            { error: String(e) },
+            { error: String(err) },
             "Graph regex rescue failed.",
           );
-          throw e;
+          throw err;
         }
       } else {
         tracer.trace("llm_graph_fatal", {}, "No JSON-like structure found in LLM Graph response.");
@@ -487,9 +533,8 @@ Text: "${JSON.stringify(text).slice(1, -1)}"`;
     return { nodes, edges };
   } catch (error) {
     // LLM extraction is best-effort — never fail the main operation
-    console.warn(
-      `[memory-hybrid][graph] extractGraphFromText failed for: "${text.substring(0, 40)}..."`,
-      error instanceof Error ? error.message : String(error),
+    logger.warn(
+      `[memory-hybrid][graph] extractGraphFromText failed for: "${text.substring(0, 40)}...": ${error instanceof Error ? error.message : String(error)}`,
     );
     return { nodes: [], edges: [] };
   }
@@ -502,9 +547,12 @@ Text: "${JSON.stringify(text).slice(1, -1)}"`;
 export async function extractGraphFromBatch(
   facts: string[],
   chatModel: ChatModel,
+  priority = TaskPriority.NORMAL,
+  tracer: MemoryTracer,
+  logger: Logger,
 ): Promise<{ nodes: GraphNode[]; edges: GraphEdge[] }> {
   if (facts.length === 0) return { nodes: [], edges: [] };
-  if (facts.length === 1) return extractGraphFromText(facts[0], chatModel);
+  if (facts.length === 1) return extractGraphFromText(facts[0], chatModel, priority, tracer, logger);
 
   const factList = facts.map((f, i) => `${i + 1}. ${f}`).join("\n");
   const prompt = `Extract a unified knowledge graph from the multiple facts provided below.
@@ -526,7 +574,7 @@ Facts:
 ${factList}`;
 
   try {
-    const response = await chatModel.complete([{ role: "user", content: prompt }], true);
+    const response = await chatModel.complete([{ role: "user", content: prompt }], true, priority);
     const cleanJson = response
       .replace(/```json\s*/g, "")
       .replace(/```\s*/g, "")
@@ -547,16 +595,16 @@ ${factList}`;
     ]);
 
     const nodes: GraphNode[] = (data.nodes || [])
-      .filter((n: any) => n.id && n.type)
-      .map((n: any) => ({
+      .filter((n: Record<string, unknown>) => n.id && n.type)
+      .map((n: Record<string, unknown>) => ({
         id: String(n.id).toLowerCase().trim(),
         type: String(n.type),
         description: n.description ? String(n.description) : undefined,
       }));
 
     const edges: GraphEdge[] = (data.edges || [])
-      .filter((e: any) => e.source && e.target && e.relation)
-      .map((e: any) => ({
+      .filter((e: Record<string, unknown>) => e.source && e.target && e.relation)
+      .map((e: Record<string, unknown>) => ({
         source: String(e.source).toLowerCase().trim(),
         target: String(e.target).toLowerCase().trim(),
         relation: allowedRelations.has(String(e.relation).toUpperCase())
@@ -567,7 +615,7 @@ ${factList}`;
 
     return { nodes, edges };
   } catch (error) {
-    console.warn(`[memory-hybrid][graph] extractGraphFromBatch failed:`, String(error));
+    logger.warn(`[memory-hybrid][graph] extractGraphFromBatch failed: ${String(error)}`);
     return { nodes: [], edges: [] };
   }
 }

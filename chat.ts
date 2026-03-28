@@ -10,16 +10,19 @@
  */
 
 import OpenAI from "openai";
-import { tracer } from "./tracer.js";
+import { ApiRateLimiter, TaskPriority } from "./limiter.js";
+import { MemoryTracer, type Logger } from "./tracer.js";
 import { withRetry } from "./utils.js";
 
 export type ChatProvider = "openai" | "google";
 
 // Default chat models per provider (used for graph/capture, NOT for embedding)
 export const DEFAULT_CHAT_MODELS: Record<string, string> = {
-  google: "gemma-3-27b-it",
+  google: "gemini-3.1-flash-lite-preview",
   openai: "gpt-4o-mini",
 };
+
+const FALLBACK_GOOGLE_MODEL = "gemma-3-12b-it";
 
 export class ChatModel {
   private openai?: OpenAI;
@@ -28,6 +31,9 @@ export class ChatModel {
     private readonly apiKey: string,
     private readonly model: string,
     private readonly provider: ChatProvider,
+    private readonly tracer: MemoryTracer,
+    private readonly logger: Logger,
+    private readonly limiter?: ApiRateLimiter,
   ) {
     if (this.provider === "openai") {
       this.openai = new OpenAI({ apiKey });
@@ -37,11 +43,25 @@ export class ChatModel {
   /**
    * Send a chat completion request to the LLM.
    * @param messages - Chat messages (role + content)
-   * @param jsonMode - If true, request JSON output format
+   * @param priority - Priority of the task (defaults to NORMAL)
    * @returns The LLM response text
    */
-  async complete(messages: { role: string; content: string }[], jsonMode = false): Promise<string> {
+  async complete(
+    messages: { role: string; content: string }[],
+    jsonMode = false,
+    priority = TaskPriority.NORMAL,
+  ): Promise<string> {
     return this.executeWithRetry(() => {
+      if (this.limiter) {
+        return this.limiter.execute(
+          () =>
+            this.provider === "openai"
+              ? this.completeOpenAI(messages, jsonMode)
+              : this.completeGoogle(messages, jsonMode),
+          priority,
+          "chat_complete",
+        );
+      }
       if (this.provider === "openai") {
         return this.completeOpenAI(messages, jsonMode);
       }
@@ -116,7 +136,7 @@ export class ChatModel {
         // Sanitize API key from error messages
         const sanitizedError = errorBody.replace(this.apiKey, "[REDACTED]");
 
-        tracer.trace(
+        this.tracer.trace(
           "llm_api_error",
           { status: response.status, error: sanitizedError, model: this.model },
           "Google API returned an error",
@@ -124,15 +144,15 @@ export class ChatModel {
 
         // If JSON mode is not supported by this model, retry without it
         if (withJsonMime && errorBody.includes("JSON mode is not enabled")) {
-          console.warn(
+          this.logger.warn(
             `[memory-hybrid][chat] Model ${this.model} doesn't support JSON mode, falling back to plain text`,
           );
           return doRequest(false);
         }
 
         if (response.status === 429 || errorBody.includes("Quota exceeded")) {
-          console.error(
-            "\n\n🚨 [MEMORY-HYBRID] ФОРС-МАЖОР: ЛІМІТ ГОЛОГРАФІЧНОЇ ПАМ'ЯТІ (API QUOTA EXCEEDED)! 🚨\n\n",
+          this.logger.error(
+            "[MEMORY-HYBRID] API QUOTA EXCEEDED (429)! Memory functions limited.",
           );
         }
 
@@ -146,7 +166,27 @@ export class ChatModel {
       return data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
     };
 
-    return doRequest(jsonMode);
+    try {
+      return await doRequest(jsonMode);
+    } catch (err) {
+      // Fallback logic for Google: if gemini fails, try gemma
+      if (this.model !== FALLBACK_GOOGLE_MODEL && !this.model.includes("gemma")) {
+        this.tracer.trace(
+          "llm_fallback",
+          { originalModel: this.model, fallbackModel: FALLBACK_GOOGLE_MODEL, error: String(err) },
+          `Primary model failed, falling back to ${FALLBACK_GOOGLE_MODEL}`,
+        );
+        // Temporary override for this request
+        const originalModel = (this as any).model;
+        (this as any).model = FALLBACK_GOOGLE_MODEL;
+        try {
+          return await doRequest(false); // Fallback usually safer in plain text
+        } finally {
+          (this as any).model = originalModel;
+        }
+      }
+      throw err;
+    }
   }
 
   /**

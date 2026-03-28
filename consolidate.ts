@@ -16,6 +16,8 @@
 import { escapeMemoryForPrompt } from "./capture.js";
 import type { ChatModel } from "./chat.js";
 import type { Embeddings } from "./embeddings.js";
+import { TaskPriority } from "./limiter.js";
+import { type Logger } from "./tracer.js";
 
 // ============================================================================
 // Types
@@ -114,7 +116,11 @@ function cosineSimilarity(a: number[], b: number[]): number {
  *   Input: ["User likes coffee", "User drinks coffee every morning", "User prefers black coffee"]
  *   Output: "User drinks black coffee every morning (strong preference)"
  */
-export async function mergeFacts(facts: string[], chatModel: ChatModel): Promise<string | null> {
+export async function mergeFacts(
+  facts: string[],
+  chatModel: ChatModel,
+  priority = TaskPriority.LOW,
+): Promise<string | null> {
   if (facts.length < 2) return null;
 
   const numberedFacts = facts.map((f, i) => `${i + 1}. "${escapeMemoryForPrompt(f)}"`).join("\n");
@@ -131,6 +137,7 @@ Return ONLY the merged fact as a single plain text string (no JSON, no quotes, n
     const response = await chatModel.complete(
       [{ role: "user", content: prompt }],
       false, // plain text, not JSON
+      priority,
     );
 
     const merged = response.trim();
@@ -152,9 +159,22 @@ Return ONLY the merged fact as a single plain text string (no JSON, no quotes, n
 export async function mergeFactsBatch(
   clusters: string[][],
   chatModel: ChatModel,
-): Promise<Array<string | null>> {
+  priority = TaskPriority.LOW,
+  logger?: Logger,
+): Promise<string[]> {
   if (clusters.length === 0) return [];
-  if (clusters.length === 1) return [await mergeFacts(clusters[0], chatModel)];
+
+  const results: string[] = [];
+  if (logger) logger.info(`[memory-hybrid] Merging ${clusters.length} clusters...`);
+
+  // If only one cluster, use the single mergeFacts function
+  if (clusters.length === 1) {
+    const merged = await mergeFacts(clusters[0], chatModel, priority);
+    if (merged) {
+      results.push(merged);
+    }
+    return results;
+  }
 
   const formattedClusters = clusters
     .map((facts, i) => {
@@ -172,20 +192,16 @@ Clusters to merge:
 ${formattedClusters}`;
 
   try {
-    const response = await chatModel.complete([{ role: "user", content: prompt }], true);
-    const cleanJson = response
-      .replace(/```json\s*/g, "")
-      .replace(/```\s*/g, "")
-      .trim();
-    const results = JSON.parse(cleanJson);
+    const response = await chatModel.complete([{ role: "user", content: prompt }], true, priority);
+    const cleanJson = response.replace(/```json\s*/g, "").replace(/```\s*/g, "").trim();
+    const data = JSON.parse(cleanJson);
 
-    if (!Array.isArray(results)) throw new Error("Batch merge response is not an array");
-
-    // Map results back to index, ensuring we return null for any missing/invalid entries
-    return clusters.map((_, i) => (typeof results[i] === "string" ? results[i] : null));
+    return Array.isArray(data) ? data.filter((f: any) => typeof f === "string") : [];
   } catch (error) {
-    console.warn(`[memory-hybrid][consolidate] mergeFactsBatch failed:`, String(error));
-    return clusters.map(() => null);
+    if (logger) {
+      logger.warn(`[memory-hybrid][consolidate] mergeFactsBatch JSON parse failed: ${error}`);
+    }
+    return [];
   }
 }
 
