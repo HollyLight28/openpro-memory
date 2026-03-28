@@ -82,7 +82,7 @@ export function registerHooks(api: OpenClawPluginApi, deps: HookDeps): { cleanup
     }
   });
 
-  const FLUSH_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
+  const FLUSH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
   let lastFlushTime = 0;
   const PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
   let lastPruneTime = 0;

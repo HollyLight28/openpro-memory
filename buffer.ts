@@ -48,6 +48,8 @@ export class WorkingMemoryBuffer {
   private readonly importanceThreshold: number;
   private readonly mentionThreshold: number;
 
+  private mutex = Promise.resolve();
+
   constructor(maxSize = 50, importanceThreshold = 0.7, mentionThreshold = 3) {
     this.maxSize = maxSize;
     this.importanceThreshold = importanceThreshold;
@@ -55,36 +57,62 @@ export class WorkingMemoryBuffer {
   }
 
   /**
-   * Load buffer from disk (JSONL format).
+   * Execute a function with a lock to prevent race conditions during async ops.
    */
-  async load(path: string, logger?: Logger): Promise<boolean> {
+  private async withLock<T>(fn: () => Promise<T>): Promise<T> {
+    let release: () => void = () => {};
+    const lock = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const prev = this.mutex;
+    this.mutex = lock;
+    await prev;
+
     try {
-      const data = await readFile(path, "utf-8");
-      const entries = JSON.parse(data);
-      if (Array.isArray(entries)) {
-        this.buffer = entries.filter((e) => e && e.text && e.timestamp);
-        // Cap if file was larger than current maxSize
-        if (this.buffer.length > this.maxSize) {
-          this.buffer = this.buffer.slice(-this.maxSize);
-        }
-        if (logger) {
-          logger.info(`[memory-hybrid][buffer] Loaded ${this.buffer.length} entries from disk.`);
-        }
-        return true;
-      }
-    } catch (err) {
-      // No file or corrupted, skip
+      return await fn();
+    } finally {
+      release();
     }
-    return false;
   }
 
   /**
-   * Save buffer to disk (JSONL format).
+   * Load buffer from disk (JSON array format).
+   */
+  async load(path: string, logger?: Logger): Promise<boolean> {
+    return this.withLock(async () => {
+      try {
+        const data = await readFile(path, "utf-8");
+        const entries = JSON.parse(data);
+        if (Array.isArray(entries)) {
+          this.buffer = entries.filter((e) => e && e.text && e.timestamp);
+          // Cap if file was larger than current maxSize
+          if (this.buffer.length > this.maxSize) {
+            this.buffer = this.buffer.slice(-this.maxSize);
+          }
+          if (logger) {
+            logger.info(`[memory-hybrid][buffer] Loaded ${this.buffer.length} entries from disk.`);
+          }
+          return true;
+        }
+      } catch (err) {
+        // No file or corrupted, skip
+      }
+      return false;
+    });
+  }
+
+  /**
+   * Save buffer to disk (JSON array format).
    */
   async save(path: string, logger?: Logger): Promise<void> {
+    // Snapshot the buffer immediately (synchronously) so that items added
+    // during the async write operation don't cause inconsistencies or data loss.
+    const snapshot = [...this.buffer];
+
     try {
       await mkdir(dirname(path), { recursive: true });
-      await writeFile(path, JSON.stringify(this.buffer, null, 2), "utf-8");
+      await writeFile(path, JSON.stringify(snapshot, null, 2), "utf-8");
     } catch (err) {
       if (logger) {
         logger.warn(`[memory-hybrid][buffer] Save failed: ${String(err)}`);

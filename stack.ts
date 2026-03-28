@@ -103,7 +103,11 @@ export class ConversationStack {
 
     try {
       const turnsText = this.pendingTurns
-        .map((t, i) => `TURN ${i + 1}:\nUSER: "${t.user}"\nASSISTANT: "${t.assistant}"`)
+        .map((t, i) => {
+          const safeUser = JSON.stringify(t.user).slice(1, -1);
+          const safeAssistant = JSON.stringify(t.assistant).slice(1, -1);
+          return `TURN ${i + 1}:\nUSER: "${safeUser}"\nASSISTANT: "${safeAssistant}"`;
+        })
         .join("\n\n");
 
       const prompt = `Compress these ${this.pendingTurns.length} conversation turns into a few concise sentences (max 60 words total). 

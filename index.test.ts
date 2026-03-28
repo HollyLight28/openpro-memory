@@ -10,9 +10,9 @@ import {
   shouldCapture,
   detectCategory,
   looksLikePromptInjection,
-  escapeMemoryForPrompt,
   formatRelevantMemoriesContext,
 } from "./capture.js";
+import { escapePrompt } from "./utils.js";
 import { ChatModel } from "./chat.js";
 import { memoryConfigSchema } from "./config.js";
 import { MemoryDB } from "./database.js";
@@ -102,7 +102,7 @@ describe("config", () => {
       embedding: { apiKey: "${TEST_DEFAULT_KEY}" },
     });
 
-    expect(cfg.embedding.model).toBe("text-embedding-004");
+    expect(cfg.embedding.model).toBe("gemini-embedding-002");
     expect(cfg.embedding.provider).toBe("google");
     delete process.env.TEST_DEFAULT_KEY;
   });
@@ -252,15 +252,19 @@ describe("promptInjection", () => {
 // Escape and Format
 // ============================================================================
 
-describe("escapeMemoryForPrompt", () => {
+describe("escapePrompt", () => {
   test("should escape HTML special characters", () => {
-    expect(escapeMemoryForPrompt('<script>alert("xss")</script>')).toBe(
-      "‹script›alert(\"xss\")‹/script›",
+    expect(escapePrompt('<script>alert("xss")</script>')).toBe(
+      '‹script›alert("xss")‹/script›',
     );
   });
 
   test("should escape ampersands and quotes", () => {
-    expect(escapeMemoryForPrompt("Tom & Jerry's")).toBe("Tom & Jerry's");
+    expect(escapePrompt("Tom & Jerry's")).toBe("Tom & Jerry's");
+  });
+
+  test("should escape triple backticks", () => {
+    expect(escapePrompt("```javascript\nalert(1)\n```")).toBe("'''javascript\nalert(1)\n'''");
   });
 });
 
@@ -333,14 +337,15 @@ describe("MemoryDB Error Handling", () => {
     const mockTracer = { traceSummary: vi.fn(), trace: vi.fn(), traceError: vi.fn() } as any;
 
     test("Bug 4: should NOT drop in-flight recall deltas during flush", async () => {
-    const graph = new GraphDB("/tmp/test-graph", mockTracer, mockLogger as any);
-    const db = new MemoryDB("/tmp/test-db", 768, mockTracer, mockLogger as any);
+      const graph = new GraphDB("/tmp/test-graph", mockTracer, mockLogger as any);
+      const db = new MemoryDB("/tmp/test-db", 768, mockTracer, mockLogger as any);
       const id = "11111111-2222-3333-4444-555555555555";
       const mockRow = { id, recallCount: 10, text: "test", vector: [] };
 
       (db as any).ensureInitialized = vi.fn().mockResolvedValue(undefined);
       (db as any).table = {
         delete: vi.fn().mockResolvedValue(undefined),
+        update: vi.fn().mockResolvedValue(undefined),
         query: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnThis(),
           toArray: vi.fn().mockResolvedValue([mockRow]),

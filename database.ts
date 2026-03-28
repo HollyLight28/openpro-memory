@@ -230,12 +230,19 @@ export class MemoryDB {
     return validRows.length;
   }
 
+  /** Validate category string to prevent query injection (alphanumeric + underscore only) */
+  private static readonly SAFE_CATEGORY = /^[a-z_]+$/;
+
   /** Dream Mode Phase 2: Fetch specific categories for profiling */
   async getMemoriesByCategory(categories: string[], limit: number = 50): Promise<MemoryEntry[]> {
     await this.ensureInitialized();
     if (categories.length === 0) return [];
 
-    const cats = categories.map((c) => `'${c}'`).join(", ");
+    // Sanitize category values to prevent query injection
+    const safeCategories = categories.filter((c) => MemoryDB.SAFE_CATEGORY.test(c));
+    if (safeCategories.length === 0) return [];
+
+    const cats = safeCategories.map((c) => `'${c}'`).join(", ");
     const rows = await this.table!.query().where(`category IN (${cats})`).limit(limit).toArray();
     return rows as unknown as MemoryEntry[];
   }
@@ -410,9 +417,9 @@ export class MemoryDB {
   }
 
   /** List all memories (for consolidation). */
-  async listAll(): Promise<MemoryEntry[]> {
+  async listAll(limit = 1000): Promise<MemoryEntry[]> {
     await this.ensureInitialized();
-    const rows = await this.table!.query().toArray();
+    const rows = await this.table!.query().limit(limit).toArray();
     return rows.map((row) => {
       const id = row.id as string;
       return {
@@ -492,53 +499,29 @@ export class MemoryDB {
         return 0;
       }
 
-      const updatedRows: Record<string, unknown>[] = [];
-      const successfullyFlushedIds: string[] = [];
+      const flushedIds: string[] = [];
 
-      for (const row of existingRows) {
-        const id = row.id;
-        // BUG 2 FIX: Use snapshotted delta from entriesToFlush
-        const deltaTuple = entriesToFlush.find(([eid]) => eid === id);
-        const delta = deltaTuple ? deltaTuple[1] : 0;
-        if (delta <= 0) continue;
+      // Use Promise.all to update in parallel for efficiency
+      await Promise.all(
+        existingRows.map(async (row) => {
+          const id = row.id;
+          const deltaTuple = entriesToFlush.find(([eid]) => eid === id);
+          const delta = deltaTuple ? deltaTuple[1] : 0;
+          if (delta <= 0) return;
 
-        const updatedRow = {
-          ...row,
-          recallCount: (row.recallCount ?? 0) + delta,
-        };
+          const newCount = (row.recallCount ?? 0) + delta;
 
-        delete (updatedRow as Record<string, unknown>)._distance;
-        delete (updatedRow as Record<string, unknown>)["vector.isValid"];
+          await this.table!.update({
+            where: `id = '${id}'`,
+            values: { recallCount: newCount },
+          });
+          flushedIds.push(id);
+        }),
+      );
 
-        updatedRows.push(updatedRow as unknown as Record<string, unknown>);
-        successfullyFlushedIds.push(id);
-      }
-
-      if (updatedRows.length === 0) return 0;
-
-      // Store-Before-Delete pattern: add updated rows first, then delete old ones.
-      // If crash occurs after add but before delete, we get duplicates (recoverable)
-      // instead of data loss (unrecoverable).
-      const idList = successfullyFlushedIds.map((id) => `'${id}'`).join(", ");
-
-      // Step 1: Add updated rows (safe: duplicates are recoverable)
-      await this.safeAdd(updatedRows);
-
-      // Step 2: Delete old rows (safe: new data already persisted)
-      try {
-        await this.table!.delete(`id IN (${idList})`);
-      } catch (deleteErr) {
-        // Old rows remain alongside new ones — duplicates, but no data loss.
-        // Next flush cycle will resolve this naturally.
-        this.tracer.trace(
-          "flush_recall_delete_warning",
-          { ids: successfullyFlushedIds, error: String(deleteErr) },
-          `Warning: old rows not deleted after update. Duplicates may exist until next compaction.`,
-        );
-      }
-
+      // Successfully updated — carefully deduct snapshotted counts from deltas
       for (const [id, countAtStart] of entriesToFlush) {
-        if (!successfullyFlushedIds.includes(id)) continue;
+        if (!flushedIds.includes(id)) continue;
 
         const currentDelta = this.recallCountDeltas.get(id) ?? 0;
         const remaining = currentDelta - countAtStart;
@@ -549,22 +532,18 @@ export class MemoryDB {
         }
       }
 
-      this.tracer.trace(
-        "flush_recall_counts",
-        { count: updatedRows.length },
-        `Persisted recall counts for ${updatedRows.length} memories.`,
-      );
-
-      return updatedRows.length;
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`[memory-hybrid] flushRecallCounts batch failed: ${msg}`);
-
-      // If it's a critical data loss risk, bubble it up (Disk Full or explicit CRITICAL)
-      if (msg.includes("CRITICAL") || msg.includes("Disk Full")) {
-        throw new Error(`[memory-hybrid] CRITICAL DATA LOSS RISK: ${msg}`);
+      if (flushedIds.length > 0) {
+        this.tracer.trace(
+          "flush_recall_counts",
+          { count: flushedIds.length },
+          `Persisted recall counts for ${flushedIds.length} memories (stable IDs).`,
+        );
       }
 
+      return flushedIds.length;
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`[memory-hybrid] flushRecallCounts failed: ${msg}`);
       return 0;
     }
   }
@@ -582,8 +561,13 @@ export class MemoryDB {
     const toDelete = candidates.filter((row) => !this.recallCountDeltas.has(row.id as string));
 
     if (toDelete.length > 0) {
-      for (const row of toDelete) {
-        await this.table!.delete(`id = '${row.id}'`);
+      // Batch delete for efficiency (replaces N+1 individual deletes)
+      const validIds = toDelete
+        .filter((row) => typeof row.id === "string" && UUID_REGEX.test(row.id as string))
+        .map((row) => `'${row.id}'`)
+        .join(", ");
+      if (validIds) {
+        await this.table!.delete(`id IN (${validIds})`);
       }
     }
 

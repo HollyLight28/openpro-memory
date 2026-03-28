@@ -1,23 +1,42 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import type { HookDeps } from "./hooks.js";
-import { hybridScore, getGraphEnrichment } from "./recall.js";
-import { formatRadarContext, smartCapture, shouldCapture, detectCategory, generateMemorySummary } from "./capture.js";
-import { TaskPriority } from "./limiter.js";
-import { validateMemoryInput } from "./security.js";
-import { extractGraphFromBatch } from "./graph.js";
+import {
+  formatRadarContext,
+  smartCapture,
+  shouldCapture,
+  detectCategory,
+  generateMemorySummary,
+} from "./capture.js";
+import type { SmartCaptureFact } from "./capture.js";
+import type { ChatModel } from "./chat.js";
 import type { MemoryCategory } from "./config.js";
-import { MemoryTracer, type Logger } from "./tracer.js";
 import type { MemoryDB } from "./database.js";
 import type { Embeddings } from "./embeddings.js";
+import { extractGraphFromBatch } from "./graph.js";
 import type { GraphDB } from "./graph.js";
-import type { ChatModel } from "./chat.js";
+import type { HookDeps } from "./hooks.js";
+import { TaskPriority } from "./limiter.js";
+import { hybridScore, getGraphEnrichment } from "./recall.js";
+import { validateMemoryInput } from "./security.js";
+import { MemoryTracer, type Logger } from "./tracer.js";
+
+/** Shape of the event object passed to hook handlers */
+interface AgentEvent {
+  prompt?: string;
+  success?: boolean;
+  messages?: Array<any>;
+}
+
+/** Shape of the context object passed to hook handlers */
+interface HookContext {
+  trigger?: string;
+}
 
 /**
  * Handle memory recall (before_agent_start)
  */
 export async function handleRecall(
-  event: { prompt: string },
-  ctx: any,
+  event: AgentEvent,
+  ctx: HookContext | undefined,
   api: OpenClawPluginApi,
   deps: HookDeps,
   tracer: MemoryTracer,
@@ -73,8 +92,8 @@ export async function handleRecall(
  * Handle memory capture (agent_end)
  */
 export async function handleCapture(
-  event: any,
-  ctx: any,
+  event: AgentEvent,
+  ctx: HookContext | undefined,
   api: OpenClawPluginApi,
   deps: HookDeps,
   tracer: MemoryTracer,
@@ -85,7 +104,7 @@ export async function handleCapture(
   // Extract messages
   const userTexts: string[] = [];
   const assistantTexts: string[] = [];
-  for (const msg of (event.messages || [])) {
+  for (const msg of event.messages || []) {
     if (msg.role === "user") userTexts.push(msg.content);
     else if (msg.role === "assistant") assistantTexts.push(msg.content);
   }
@@ -95,9 +114,9 @@ export async function handleCapture(
 
   // 1. Conversation Stack (Context Compression)
   if (lastUserMsg.length > 10 || lastAssistantMsg.length > 10) {
-    await conversationStack.push(lastUserMsg, lastAssistantMsg, chatModel, tracer, logger).catch(e => 
-      logger.warn(`stack compression failed: ${e}`)
-    );
+    await conversationStack
+      .push(lastUserMsg, lastAssistantMsg, chatModel, tracer, logger)
+      .catch((e) => logger.warn(`stack compression failed: ${e}`));
   }
 
   // 2. Smart Capture (LLM-based)
@@ -106,30 +125,48 @@ export async function handleCapture(
     if (validation.isValid) {
       const result = await smartCapture(lastUserMsg, lastAssistantMsg, chatModel, tracer, logger);
       if (result.shouldStore && result.facts.length > 0) {
-        await processFacts(result.facts.slice(0, 5), db, embeddings, graphDB, chatModel, tracer, logger);
+        await processFacts(
+          result.facts.slice(0, 5),
+          db,
+          embeddings,
+          graphDB,
+          chatModel,
+          tracer,
+          logger,
+        );
       }
     }
   }
 
   // 3. Rule-based Capture (Buffer)
-  if (!cfg.smartCapture || lastUserMsg.length >= 15) {
-     const toCapture = userTexts.filter(t => shouldCapture(t, { maxChars: cfg.captureMaxChars }));
-     for (const text of toCapture.slice(0, 3)) {
-       const category = detectCategory(text);
-       const importance = (category === "entity" || category === "decision") ? 0.85 : 0.7;
-       const promotion = workingMemory.add(text, importance, category);
-       if (promotion.promoted) {
-         const vector = await embeddings.embed(text);
-         const summary = await generateMemorySummary(text, chatModel, logger);
-         await db.store({ text, vector, importance, category, summary });
-         tracer.traceStore(text, category, "rule-based");
-       }
-     }
+  if (!cfg.smartCapture) {
+    const toCapture = userTexts.filter((t) => shouldCapture(t, { maxChars: cfg.captureMaxChars }));
+    for (const text of toCapture.slice(0, 3)) {
+      const category = detectCategory(text);
+      const importance = category === "entity" || category === "decision" ? 0.85 : 0.7;
+      const promotion = workingMemory.add(text, importance, category);
+      if (promotion.promoted) {
+        const vector = await embeddings.embed(text);
+        const summary = await generateMemorySummary(text, chatModel, logger);
+        await db.store({
+          text,
+          vector,
+          importance,
+          category,
+          summary,
+          happenedAt: null,
+          validUntil: null,
+          emotionalTone: "neutral",
+          emotionScore: 0,
+        });
+        tracer.traceStore(text, category, "rule-based");
+      }
+    }
   }
 }
 
 async function processFacts(
-  facts: any[],
+  facts: SmartCaptureFact[],
   db: MemoryDB,
   embeddings: Embeddings,
   graphDB: GraphDB,
@@ -137,13 +174,13 @@ async function processFacts(
   tracer: MemoryTracer,
   logger: Logger,
 ) {
-  const vectors = await embeddings.embedBatch(facts.map(f => f.text));
+  const vectors = await embeddings.embedBatch(facts.map((f) => f.text));
   const storedFacts: string[] = [];
 
   for (let i = 0; i < facts.length; i++) {
     const fact = facts[i];
     const vector = vectors[i];
-    
+
     // Check for contradictions or duplicates
     const existing = await db.search(vector, 1, 0.95);
     if (existing.length > 0) continue;
@@ -153,9 +190,11 @@ async function processFacts(
       vector,
       importance: fact.importance,
       category: fact.category,
-      summary: fact.summary || fact.text.slice(0, 100),
-      emotionalTone: fact.emotionalTone || "neutral",
-      emotionScore: fact.emotionScore || 0,
+      summary: fact.summary ?? fact.text.slice(0, 100),
+      happenedAt: fact.happenedAt ?? null,
+      validUntil: fact.validUntil ?? null,
+      emotionalTone: fact.emotionalTone ?? "neutral",
+      emotionScore: fact.emotionScore ?? 0,
     });
     tracer.traceStore(fact.text, fact.category, entry.id);
     storedFacts.push(fact.text);

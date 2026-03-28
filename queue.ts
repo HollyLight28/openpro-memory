@@ -1,36 +1,35 @@
+import { type MemoryTracer } from "./tracer.js";
+
 export interface QueueOptions {
   delayMs?: number;
-  /** Optional logger for error reporting (no silent failures) */
+  maxSize?: number;
   onError?: (name: string, error: unknown) => void;
+  logger?: any;
 }
 
-/**
- * Orchestrated Background Queue
- *
- * Ensures that heavy memory tasks (LLM calls, embeddings, graph extraction)
- * are processed strictly sequentially with a delay between them.
- * This prevents Gemini API 429 (Rate Limit) errors while allowing the
- * agent to respond immediately to the user.
- */
 export class MemoryQueue {
   private queue: Array<{ name: string; task: () => Promise<void> }> = [];
   private processing = false;
   private delayMs: number;
+  private maxSize: number;
+  private logger?: any;
   private onError: (name: string, error: unknown) => void;
 
   constructor(options: QueueOptions = {}) {
     this.delayMs = options.delayMs ?? 1000;
+    this.maxSize = options.maxSize ?? 100;
+    this.logger = options.logger;
     this.onError =
       options.onError ??
-      (() => {
-        /* Default to no-op if no handler provided, but plugins should provide one */
-      });
+      (() => {});
   }
 
-  /**
-   * Push a task to the queue. Returns immediately.
-   */
   push(name: string, task: () => Promise<void>): void {
+    if (this.queue.length >= this.maxSize) {
+      this.onError(name, new Error(`Queue overflow: ${this.queue.length} pending tasks (max: ${this.maxSize})`));
+      this.logger?.warn(`[memory-hybrid] Queue overflow in ${name}`);
+      return;
+    }
     this.queue.push({ name, task });
     if (!this.processing) {
       this.processNext().catch((err) => {

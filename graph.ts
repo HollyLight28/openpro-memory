@@ -18,6 +18,7 @@ import { join, dirname } from "node:path";
 import type { ChatModel } from "./chat.js";
 import { TaskPriority } from "./limiter.js";
 import { MemoryTracer, type Logger } from "./tracer.js";
+import { escapePrompt } from "./utils.js";
 
 // ============================================================================
 // Types
@@ -134,7 +135,7 @@ export class GraphDB {
         this.loaded = true;
         return;
       } catch (err) {
-        if ((err as any).code !== "ENOENT") {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
           this.logger.warn(`[memory-hybrid][graph] Load failed: ${err}`);
         }
         // JSONL doesn't exist — try legacy JSON migration
@@ -169,7 +170,7 @@ export class GraphDB {
           `[memory-hybrid][graph] Migrated legacy graph.json → graph.jsonl (${this.nodes.size} nodes, ${this.edges.length} edges)`,
         );
       } catch (err) {
-        if ((err as any).code !== "ENOENT") {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
           this.logger.warn(`[memory-hybrid][graph] Legacy load failed: ${err}`);
         }
         // No legacy file either — start fresh
@@ -432,6 +433,7 @@ export async function extractGraphFromText(
     return { nodes: [], edges: [] };
   }
 
+  const safeText = escapePrompt(text);
   const prompt = `Extract knowledge graph entities and relationships from the text below.
 Return ONLY valid JSON, no markdown, no explanation.
 
@@ -449,7 +451,7 @@ Rules:
 - If a relation doesn't fit the allowed list perfectly, map it to the closest one (e.g. "loves" -> "LIKES", "built" -> "CREATED")
 - If no entities found, return {"nodes": [], "edges": []}
 
-Text: "${JSON.stringify(text).slice(1, -1)}"`;
+Text: "${JSON.stringify(safeText).slice(1, -1)}"`;
 
   try {
     const response = await chatModel.complete([{ role: "user", content: prompt }], true, priority);

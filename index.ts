@@ -98,6 +98,10 @@ const memoryPlugin = {
         workingMemory.save(bufferPath, api.logger).catch((err) => {
           api.logger.warn(`memory-hybrid: save working memory failed: ${String(err)}`);
         });
+        // Flush recall counts before closing to prevent data loss
+        db.flushRecallCounts().catch((err) => {
+          api.logger.warn(`memory-hybrid: final recall flush failed: ${String(err)}`);
+        });
         db.close().catch((err) => {
           api.logger.warn(`memory-hybrid: db close failed: ${String(err)}`);
         });

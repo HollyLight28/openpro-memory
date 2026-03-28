@@ -1,5 +1,5 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { escapeMemoryForPrompt } from "./capture.js";
+import { escapePrompt } from "./utils.js";
 import type { ChatModel } from "./chat.js";
 import { clusterBySimilarity, mergeFacts, mergeFactsBatch } from "./consolidate.js";
 import type { Embeddings } from "./embeddings.js";
@@ -105,13 +105,13 @@ export class DreamService {
   }
 
   private async generateEmpathyProfile(): Promise<void> {
-    const memories = await this.db.getMemoriesByCategory(["preference", "decision", "emotion"], 50);
+    const memories = await this.db.getMemoriesByCategory(["preference", "decision", "other"], 50);
     if (memories.length < 3) return;
 
     // Use a maximum fact count to prevent token blowout (15k limit) without slicing mid-sentence
     let facts = "";
     for (const m of memories) {
-      const escapedText = escapeMemoryForPrompt(m.text);
+      const escapedText = escapePrompt(m.text);
       if (facts.length + escapedText.length + 1 > 10000) break;
       facts += escapedText + "\n";
     }

@@ -87,6 +87,7 @@ describe("P1 Bug Reproduction", () => {
         toArray: vi.fn().mockResolvedValue([]),
         delete: vi.fn().mockResolvedValue(true),
         add: vi.fn().mockResolvedValue(true),
+        update: vi.fn().mockResolvedValue(true),
         createIndex: vi.fn().mockResolvedValue(true),
       };
       (db as any).table = mockTable;
@@ -124,20 +125,23 @@ describe("P1 Bug Reproduction", () => {
       console.log("🟢 Bug 2 Verified: Recall delta correctly tracked without inflation");
     });
 
-    test("Bug 3: Data loss if safeAdd fails after delete", async () => {
+    test("Bug 3: Stable ID update (Atomic persistence)", async () => {
       const id = "12345678-1234-1234-1234-123456789012";
       db.incrementRecallCount([id]);
 
       mockTable.toArray.mockResolvedValue([{ id, recallCount: 10, text: "hello" }]);
+      mockTable.update = vi.fn().mockResolvedValue(true);
 
-      // BUG REPRO: Delete succeeds, Add fails
-      mockTable.delete.mockResolvedValue(true);
-      mockTable.add.mockRejectedValue(new Error("Disk Full"));
+      const flushed = await db.flushRecallCounts();
 
-      await expect(db.flushRecallCounts()).rejects.toThrow("CRITICAL DATA LOSS");
-      // Verify deltas are preserved for recovery (not cleared like before)
-      expect(db.pendingRecallFlushCount).toBeGreaterThanOrEqual(0);
-      console.log("🟢 Bug 3 Verified: Critical error caught, deltas preserved for recovery");
+      expect(flushed).toBe(1);
+      expect(mockTable.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: `id = '${id}'`,
+          values: { recallCount: 11 },
+        }),
+      );
+      console.log("🟢 Bug 3 Verified: Stable update replaces the dangerous delete-swap hack");
     });
   });
 });

@@ -110,6 +110,16 @@ export class MemoryTracer {
     );
   }
 
+  public traceRateLimit(delay: number, rpm: number, tokensCount: number): void {
+    if (delay > 0) {
+      this.trace(
+        "rate_limit_throttle",
+        { delayMs: delay, rpm, activeTokens: tokensCount },
+        `Throttling request for ${delay}ms to stay within ${rpm} RPM limit.`,
+      );
+    }
+  }
+
   public traceError(action: string, error: unknown): void {
     const errorMsg = error instanceof Error ? error.message : String(error);
     this.trace(action, { error: errorMsg }, `Error occurred during ${action}.`);
