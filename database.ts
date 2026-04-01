@@ -411,6 +411,26 @@ export class MemoryDB {
     return true;
   }
 
+  /**
+   * Batch delete memories efficiently. Replaces N+1 single deletes.
+   */
+  async deleteBatch(ids: string[]): Promise<boolean> {
+    if (ids.length === 0) return true;
+    await this.ensureInitialized();
+    const validIds = ids
+      .filter((id) => UUID_REGEX.test(id))
+      .map((id) => `'${id}'`)
+      .join(", ");
+
+    if (validIds) {
+      await this.table!.delete(`id IN (${validIds})`);
+      for (const id of ids) {
+        this.recallCountDeltas.delete(id);
+      }
+    }
+    return true;
+  }
+
   async count(): Promise<number> {
     await this.ensureInitialized();
     return this.table!.countRows();
@@ -484,15 +504,20 @@ export class MemoryDB {
     }
   }
 
+  private isFlushing = false;
+
   /** Flush recall counts to DB. */
   async flushRecallCounts(): Promise<number> {
+    if (this.isFlushing) return 0;
     if (this.recallCountDeltas.size === 0) return 0;
-    await this.ensureInitialized();
 
-    const entriesToFlush = Array.from(this.recallCountDeltas.entries());
-    const ids = entriesToFlush.map(([id]) => id);
+    this.isFlushing = true;
 
     try {
+      await this.ensureInitialized();
+      const entriesToFlush = Array.from(this.recallCountDeltas.entries());
+      const ids = entriesToFlush.map(([id]) => id);
+
       const existingRows = await this.getByIds(ids);
       if (existingRows.length === 0) {
         this.recallCountDeltas.clear();
@@ -501,23 +526,21 @@ export class MemoryDB {
 
       const flushedIds: string[] = [];
 
-      // Use Promise.all to update in parallel for efficiency
-      await Promise.all(
-        existingRows.map(async (row) => {
-          const id = row.id;
-          const deltaTuple = entriesToFlush.find(([eid]) => eid === id);
-          const delta = deltaTuple ? deltaTuple[1] : 0;
-          if (delta <= 0) return;
+      // Use sequential updates to prevent LanceDB MVCC concurrent commit conflict
+      for (const row of existingRows) {
+        const id = row.id;
+        const deltaTuple = entriesToFlush.find(([eid]) => eid === id);
+        const delta = deltaTuple ? deltaTuple[1] : 0;
+        if (delta <= 0) continue;
 
-          const newCount = (row.recallCount ?? 0) + delta;
+        const newCount = (row.recallCount ?? 0) + delta;
 
-          await this.table!.update({
-            where: `id = '${id}'`,
-            values: { recallCount: newCount },
-          });
-          flushedIds.push(id);
-        }),
-      );
+        await this.table!.update({
+          where: `id = '${id}'`,
+          values: { recallCount: newCount },
+        });
+        flushedIds.push(id);
+      }
 
       // Successfully updated — carefully deduct snapshotted counts from deltas
       for (const [id, countAtStart] of entriesToFlush) {
@@ -545,6 +568,8 @@ export class MemoryDB {
       const msg = error instanceof Error ? error.message : String(error);
       this.logger.warn(`[memory-hybrid] flushRecallCounts failed: ${msg}`);
       return 0;
+    } finally {
+      this.isFlushing = false;
     }
   }
 
@@ -569,6 +594,8 @@ export class MemoryDB {
       if (validIds) {
         await this.table!.delete(`id IN (${validIds})`);
       }
+      // Periodically optimize to prevent fragmentation from deletes/updates
+      await this.table!.optimize();
     }
 
     return toDelete.length;

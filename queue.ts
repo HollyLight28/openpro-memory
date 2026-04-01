@@ -19,14 +19,15 @@ export class MemoryQueue {
     this.delayMs = options.delayMs ?? 1000;
     this.maxSize = options.maxSize ?? 100;
     this.logger = options.logger;
-    this.onError =
-      options.onError ??
-      (() => {});
+    this.onError = options.onError ?? (() => {});
   }
 
   push(name: string, task: () => Promise<void>): void {
     if (this.queue.length >= this.maxSize) {
-      this.onError(name, new Error(`Queue overflow: ${this.queue.length} pending tasks (max: ${this.maxSize})`));
+      this.onError(
+        name,
+        new Error(`Queue overflow: ${this.queue.length} pending tasks (max: ${this.maxSize})`),
+      );
       this.logger?.warn(`[memory-hybrid] Queue overflow in ${name}`);
       return;
     }

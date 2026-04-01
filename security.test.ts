@@ -64,7 +64,9 @@ describe("Security: Prompt Injection Protection", () => {
     await service.generateEmpathyProfile();
 
     // Find the call that contains the facts
-    const call = mockChatModel.complete.mock.calls.find((c: any) => c[0][0].content.includes("Facts:"));
+    const call = mockChatModel.complete.mock.calls.find((c: any) =>
+      c[0][0].content.includes("Facts:"),
+    );
     const prompt = call[0][0].content;
     expect(prompt).not.toContain("</untrusted-memory>");
     expect(prompt).toContain("‹/untrusted-memory›");
@@ -75,7 +77,9 @@ describe("Security: Prompt Injection Protection", () => {
 
     await mergeFacts(facts, mockChatModel);
 
-    const call = mockChatModel.complete.mock.calls.find((c: any) => c[0][0].content.includes("Facts:"));
+    const call = mockChatModel.complete.mock.calls.find((c: any) =>
+      c[0][0].content.includes("Facts:"),
+    );
     const prompt = call[0][0].content;
     expect(prompt).not.toContain("</untrusted-memory>");
     expect(prompt).toContain("‹/untrusted-memory›");

@@ -30,7 +30,7 @@ describe("Memory Hardening & Performance (RED)", () => {
       const bufferPath = join(TEST_DB_DIR, "working_memory.jsonl");
       const buffer = new WorkingMemoryBuffer(10);
 
-      buffer.add("Important fact", 0.9, "fact");
+      await buffer.add("Important fact", 0.9, "fact");
       await buffer.save(bufferPath);
 
       const newBuffer = new WorkingMemoryBuffer(10);

@@ -1,12 +1,12 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { escapePrompt } from "./utils.js";
 import type { ChatModel } from "./chat.js";
 import { clusterBySimilarity, mergeFacts, mergeFactsBatch } from "./consolidate.js";
+import type { MemoryDB } from "./database.js";
 import type { Embeddings } from "./embeddings.js";
 import type { GraphDB } from "./graph.js";
-import { MemoryTracer, type Logger } from "./tracer.js";
-import type { MemoryDB } from "./database.js";
 import { TaskPriority } from "./limiter.js";
+import { MemoryTracer, type Logger } from "./tracer.js";
+import { escapePrompt } from "./utils.js";
 
 const IDLE_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes idle
 const LOOP_INTERVAL_MS = 5 * 60 * 1000; // check every 5 minutes
@@ -70,9 +70,7 @@ export class DreamService {
     this.isDreaming = true;
     this.lastDreamTime = now; // Mark attempt/start early to avoid spam if crash occurs
     try {
-      this.logger.info(
-        "memory-hybrid: [Dream Mode] Entering Synthetic Sleep (NREM Phase 1)...",
-      );
+      this.logger.info("memory-hybrid: [Dream Mode] Entering Synthetic Sleep (NREM Phase 1)...");
 
       // Phase 1: Synaptic Pruning (Garbage Collection)
       const deleted = await this.db.cleanupTrash();
@@ -141,7 +139,8 @@ export class DreamService {
     });
 
     // Now safe to delete old profiles (new one is already persisted)
-    const oldProfiles = await this.db.getMemoriesByCategory(["preference"], 200);
+    // We fetch a larger amount (1000) instead of 200 to prevent old [EMPATHY PROFILE] memory leaks
+    const oldProfiles = await this.db.getMemoriesByCategory(["preference"], 1000);
     for (const m of oldProfiles) {
       if (
         m.text.startsWith("[EMPATHY PROFILE]") &&
@@ -236,16 +235,17 @@ export class DreamService {
         emotionScore: 0,
       });
 
-      for (const item of cluster) {
-        await this.db.delete(item.id);
-      }
+      const idsToDelete = cluster.map((item) => item.id);
+      await this.db.deleteBatch(idsToDelete);
       mergedCount++;
     }
 
     if (mergedCount > 0) {
       // The original instruction snippet had `c.clustersFound` which is not defined here.
       // I'm assuming it meant the number of clusters that were successfully merged.
-      this.logger.info(`[memory-hybrid] Dream Cycle: Phase 1 (Consolidation) - Merged ${mergedCount} clusters.`);
+      this.logger.info(
+        `[memory-hybrid] Dream Cycle: Phase 1 (Consolidation) - Merged ${mergedCount} clusters.`,
+      );
     }
   }
 

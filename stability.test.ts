@@ -1,9 +1,9 @@
+import { rm, mkdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, test, expect, vi, beforeEach } from "vitest";
 import { MemoryDB } from "./database.js";
 import { MemoryTracer } from "./tracer.js";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
-import { rm, mkdir } from "node:fs/promises";
 
 describe("Database Stability", () => {
   const dbPath = join(tmpdir(), `memory-stability-${Date.now()}`);
@@ -11,7 +11,9 @@ describe("Database Stability", () => {
   const tracer = new MemoryTracer();
 
   beforeEach(async () => {
-    try { await rm(dbPath, { recursive: true, force: true }); } catch {}
+    try {
+      await rm(dbPath, { recursive: true, force: true });
+    } catch {}
     await mkdir(dbPath, { recursive: true });
   });
 
@@ -45,10 +47,10 @@ describe("Database Stability", () => {
     expect(updated, "Memory should still be accessible by original ID").not.toBeNull();
     expect(updated?.id).toBe(originalId);
     expect(updated?.recallCount).toBe(1);
-    
+
     // Ensure no duplicates exist (since the old one should be gone or updated)
     const all = await db.listAll();
-    const matches = all.filter(e => e.text === "Vova likes pizza");
+    const matches = all.filter((e) => e.text === "Vova likes pizza");
     expect(matches.length).toBe(1);
   });
 });

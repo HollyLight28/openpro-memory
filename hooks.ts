@@ -6,9 +6,9 @@ import type { MemoryDB } from "./database.js";
 import type { DreamService } from "./dream.js";
 import type { Embeddings } from "./embeddings.js";
 import type { GraphDB } from "./graph.js";
+import { handleRecall, handleCapture } from "./handlers.js";
 import { MemoryQueue } from "./queue.js";
 import type { ConversationStack } from "./stack.js";
-import { handleRecall, handleCapture } from "./handlers.js";
 import { MemoryTracer } from "./tracer.js";
 
 export interface HookDeps {

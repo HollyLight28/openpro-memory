@@ -3,10 +3,10 @@ import {
   shouldCapture,
   detectCategory,
   looksLikePromptInjection,
-  escapeMemoryForPrompt,
   smartCapture,
   formatRelevantMemoriesContext,
 } from "./capture.js";
+import { escapePrompt } from "./utils.js";
 
 const mockLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 const mockTracer = { traceSummary: vi.fn(), trace: vi.fn(), traceError: vi.fn() } as any;

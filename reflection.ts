@@ -18,10 +18,10 @@
  * They store facts — we understand the person.
  */
 
-import { escapePrompt } from "./utils.js";
 import type { ChatModel } from "./chat.js";
 import { TaskPriority } from "./limiter.js";
 import { type Logger } from "./tracer.js";
+import { escapePrompt } from "./utils.js";
 
 // ============================================================================
 // Types
@@ -65,7 +65,8 @@ export async function generateReflection(
   logger?: Logger,
 ): Promise<ReflectionResult> {
   if (memories.length < 5) {
-    if (logger) logger.info("Not enough memories yet. Need at least 5 facts to generate a reflection.");
+    if (logger)
+      logger.info("Not enough memories yet. Need at least 5 facts to generate a reflection.");
     return {
       summary: "Not enough memories yet. Need at least 5 facts to generate a reflection.",
       patterns: [],

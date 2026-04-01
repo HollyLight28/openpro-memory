@@ -32,7 +32,13 @@ describe("SOTA Architecture Upgrades", () => {
 
   describe("1. Graph Ontology Enforcement (Concept Chaos)", () => {
     it("normalizes extracted node IDs to lowercase trimmed", async () => {
-      const mockChatModel = new ChatModel("test-key", "gpt-4o-mini", "openai", undefined as any, undefined as any);
+      const mockChatModel = new ChatModel(
+        "test-key",
+        "gpt-4o-mini",
+        "openai",
+        undefined as any,
+        undefined as any,
+      );
       // Mock the LLM returning messy cased nodes and relations
       vi.spyOn(mockChatModel, "complete").mockResolvedValueOnce(
         JSON.stringify({
@@ -66,7 +72,13 @@ describe("SOTA Architecture Upgrades", () => {
     });
 
     it("accepts allowed relations directly", async () => {
-      const mockChatModel = new ChatModel("test-key", "gpt-4o-mini", "openai", undefined as any, undefined as any);
+      const mockChatModel = new ChatModel(
+        "test-key",
+        "gpt-4o-mini",
+        "openai",
+        undefined as any,
+        undefined as any,
+      );
       vi.spyOn(mockChatModel, "complete").mockResolvedValueOnce(
         JSON.stringify({
           nodes: [
@@ -90,7 +102,13 @@ describe("SOTA Architecture Upgrades", () => {
 
   describe("2. JSON Fragility (Structured Outputs)", () => {
     it("sends response_format: json_object for OpenAI when jsonMode is true", async () => {
-      const mockChatModel = new ChatModel("test-key", "gpt-4o-mini", "openai", undefined as any, undefined as any);
+      const mockChatModel = new ChatModel(
+        "test-key",
+        "gpt-4o-mini",
+        "openai",
+        undefined as any,
+        undefined as any,
+      );
       const completeSpy = vi.spyOn(mockChatModel as any, "completeOpenAI").mockResolvedValue("{}");
 
       await mockChatModel.complete([{ role: "user", content: "test" }], true);

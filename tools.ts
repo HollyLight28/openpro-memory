@@ -1,6 +1,6 @@
 import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
-import { escapeMemoryForPrompt, formatRadarContext, generateMemorySummary } from "./capture.js";
+import { formatRadarContext, generateMemorySummary } from "./capture.js";
 import type { ChatModel } from "./chat.js";
 import { MEMORY_CATEGORIES, type MemoryCategory, type MemoryConfig } from "./config.js";
 import { MemoryDB } from "./database.js";
@@ -10,6 +10,7 @@ import { TaskPriority } from "./limiter.js";
 import { hybridScore, getGraphEnrichment } from "./recall.js";
 import { generateReflection } from "./reflection.js";
 import { type MemoryTracer } from "./tracer.js";
+import { escapePrompt } from "./utils.js";
 
 export interface ToolDeps {
   db: MemoryDB;
@@ -70,7 +71,7 @@ export function registerTools(api: OpenClawPluginApi, deps: ToolDeps) {
             ? finalResults
                 .map(
                   (r) =>
-                    `[${r.entry.id}] [${r.entry.category}] <untrusted-memory>${escapeMemoryForPrompt(r.entry.text)}</untrusted-memory> (Score: ${r.finalScore.toFixed(2)})`,
+                    `[${r.entry.id}] [${r.entry.category}] <untrusted-memory>${escapePrompt(r.entry.text)}</untrusted-memory> (Score: ${r.finalScore.toFixed(2)})`,
                 )
                 .join("\n") + graphEnrichment
             : "No relevant long-term memories found matching the query.";
@@ -250,8 +251,7 @@ export function registerTools(api: OpenClawPluginApi, deps: ToolDeps) {
 
           const list = results
             .map(
-              (r) =>
-                `- [${r.entry.id.slice(0, 8)}] ${escapeMemoryForPrompt(r.entry.text.slice(0, 60))}...`,
+              (r) => `- [${r.entry.id.slice(0, 8)}] ${escapePrompt(r.entry.text.slice(0, 60))}...`,
             )
             .join("\n");
 
@@ -362,7 +362,7 @@ export function registerTools(api: OpenClawPluginApi, deps: ToolDeps) {
         const text = memories
           .map(
             (m) =>
-              `[${m.id}] [${m.category}] <untrusted-memory>${escapeMemoryForPrompt(m.text)}</untrusted-memory>`,
+              `[${m.id}] [${m.category}] <untrusted-memory>${escapePrompt(m.text)}</untrusted-memory>`,
           )
           .join("\n\n");
 

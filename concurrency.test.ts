@@ -6,17 +6,17 @@ import { MemoryTracer } from "./tracer.js";
 
 describe("Concurrency & Stress Testing", () => {
   test("Limiter handles massive burst without crashing", async () => {
-    const limiter = new ApiRateLimiter({ 
+    const limiter = new ApiRateLimiter({
       minDelayMs: 10,
-      maxRequestsPerMinute: 100
+      maxRequestsPerMinute: 100,
     });
 
     const results: number[] = [];
-    const tasks = Array.from({ length: 50 }).map((_, i) => 
+    const tasks = Array.from({ length: 50 }).map((_, i) =>
       limiter.execute(async () => {
         results.push(i);
         return i;
-      }, TaskPriority.NORMAL)
+      }, TaskPriority.NORMAL),
     );
 
     await Promise.all(tasks);
@@ -25,16 +25,16 @@ describe("Concurrency & Stress Testing", () => {
 
   test("Queue respects maxSize and drops tasks", async () => {
     const errors: string[] = [];
-    const queue = new MemoryQueue({ 
-      maxSize: 5, 
+    const queue = new MemoryQueue({
+      maxSize: 5,
       delayMs: 10,
-      onError: (name, err) => errors.push(String(err))
+      onError: (name, err) => errors.push(String(err)),
     });
 
     for (let i = 0; i < 15; i++) {
-        queue.push(`task-${i}`, async () => {
-            await new Promise(r => setTimeout(r, 20));
-        });
+      queue.push(`task-${i}`, async () => {
+        await new Promise((r) => setTimeout(r, 20));
+      });
     }
 
     expect(queue.size).toBeLessThanOrEqual(5);

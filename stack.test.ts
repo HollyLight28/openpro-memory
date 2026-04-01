@@ -34,7 +34,7 @@ function createMockChatModel(responses?: string[]) {
 }
 
 describe("ConversationStack", () => {
-  it("starts empty with zero turns", () => {
+  it("starts empty with zero turns", async () => {
     const stack = new ConversationStack();
     expect(stack.turnCount).toBe(0);
     expect(stack.getSummary()).toBe("");
@@ -74,7 +74,13 @@ describe("ConversationStack", () => {
     );
     expect(stack.turnCount).toBe(0);
 
-    await stack.push("Question 2 is about memory", "Answer 2 clarifies it", mock as any, mockTracer, mockLogger);
+    await stack.push(
+      "Question 2 is about memory",
+      "Answer 2 clarifies it",
+      mock as any,
+      mockTracer,
+      mockLogger,
+    );
     expect(stack.turnCount).toBe(1);
     expect(mock.complete).toHaveBeenCalledTimes(1);
   });
@@ -101,10 +107,34 @@ describe("ConversationStack", () => {
     const mock = createMockChatModel(["Summary 1", "Summary 2"]);
     const stack = new ConversationStack(30, 2);
 
-    await stack.push("Question 1 details here", "Answer 1 details here", mock as any, mockTracer, mockLogger);
-    await stack.push("Question 2 details here", "Answer 2 details here", mock as any, mockTracer, mockLogger); 
-    await stack.push("Question 3 details here", "Answer 3 details here", mock as any, mockTracer, mockLogger);
-    await stack.push("Question 4 details here", "Answer 4 details here", mock as any, mockTracer, mockLogger); 
+    await stack.push(
+      "Question 1 details here",
+      "Answer 1 details here",
+      mock as any,
+      mockTracer,
+      mockLogger,
+    );
+    await stack.push(
+      "Question 2 details here",
+      "Answer 2 details here",
+      mock as any,
+      mockTracer,
+      mockLogger,
+    );
+    await stack.push(
+      "Question 3 details here",
+      "Answer 3 details here",
+      mock as any,
+      mockTracer,
+      mockLogger,
+    );
+    await stack.push(
+      "Question 4 details here",
+      "Answer 4 details here",
+      mock as any,
+      mockTracer,
+      mockLogger,
+    );
 
     expect(stack.turnCount).toBe(2);
     expect(mock.complete).toHaveBeenCalledTimes(2);
@@ -170,7 +200,13 @@ describe("ConversationStack", () => {
       mockTracer,
       mockLogger,
     );
-    await stack.push("Я працюю вночі і люблю темні теми", "Зрозумів, збережу це", mock as any, mockTracer, mockLogger);
+    await stack.push(
+      "Я працюю вночі і люблю темні теми",
+      "Зрозумів, збережу це",
+      mock as any,
+      mockTracer,
+      mockLogger,
+    );
 
     const block = stack.getContextBlock();
     expect(block).toContain("<conversation-summary>");

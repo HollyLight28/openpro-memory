@@ -12,12 +12,12 @@ import {
   looksLikePromptInjection,
   formatRelevantMemoriesContext,
 } from "./capture.js";
-import { escapePrompt } from "./utils.js";
 import { ChatModel } from "./chat.js";
 import { memoryConfigSchema } from "./config.js";
 import { MemoryDB } from "./database.js";
 import { vectorDimsForModel, detectProvider } from "./embeddings.js";
 import { GraphDB } from "./graph.js";
+import { escapePrompt } from "./utils.js";
 
 // ============================================================================
 // Plugin Registration
@@ -254,9 +254,7 @@ describe("promptInjection", () => {
 
 describe("escapePrompt", () => {
   test("should escape HTML special characters", () => {
-    expect(escapePrompt('<script>alert("xss")</script>')).toBe(
-      '‹script›alert("xss")‹/script›',
-    );
+    expect(escapePrompt('<script>alert("xss")</script>')).toBe('‹script›alert("xss")‹/script›');
   });
 
   test("should escape ampersands and quotes", () => {

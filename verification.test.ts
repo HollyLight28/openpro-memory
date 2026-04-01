@@ -40,10 +40,10 @@ describe("Verification of Critical Fixes", () => {
     expect(newGraph.nodeCount).toBe(5);
   });
 
-  it("should fuzzy match similar strings in Buffer (Fix #3)", () => {
+  it("should fuzzy match similar strings in Buffer (Fix #3)", async () => {
     const buffer = new WorkingMemoryBuffer(50, 0.7, 3);
 
-    buffer.add("I love artificial intelligence", 0.5, "fact");
+    await buffer.add("I love artificial intelligence", 0.5, "fact");
 
     // 1 edit distance (change 'l' to 'L') - should match
     const res1 = (buffer as any).findSimilar("I Love artificial intelligence");
@@ -59,7 +59,13 @@ describe("Verification of Critical Fixes", () => {
   });
 
   it("should retry on 429 errors in Embeddings (Fix #4)", async () => {
-    const embeddings = new Embeddings("fake-key", "gemini-embedding-001", undefined, undefined, mockLogger as any);
+    const embeddings = new Embeddings(
+      "fake-key",
+      "gemini-embedding-001",
+      undefined,
+      undefined,
+      mockLogger as any,
+    );
 
     let callCount = 0;
     // Mock the global fetch
@@ -81,7 +87,13 @@ describe("Verification of Critical Fixes", () => {
 
   it("LRU cache should evict least-recently-USED, not oldest-inserted (Bug #1)", async () => {
     // Create embeddings with a tiny cache (maxCacheSize = 3, via private field override)
-    const embeddings = new Embeddings("fake-key", "gemini-embedding-001", undefined, undefined, mockLogger as any);
+    const embeddings = new Embeddings(
+      "fake-key",
+      "gemini-embedding-001",
+      undefined,
+      undefined,
+      mockLogger as any,
+    );
     (embeddings as any).maxCacheSize = 3;
 
     let callCount = 0;
@@ -120,7 +132,13 @@ describe("Verification of Critical Fixes", () => {
   });
 
   it("should cache redundant embedding calls (Myelination)", async () => {
-    const embeddings = new Embeddings("fake-key", "gemini-embedding-001", undefined, undefined, mockLogger as any);
+    const embeddings = new Embeddings(
+      "fake-key",
+      "gemini-embedding-001",
+      undefined,
+      undefined,
+      mockLogger as any,
+    );
 
     let callCount = 0;
     global.fetch = vi.fn().mockImplementation(async () => {

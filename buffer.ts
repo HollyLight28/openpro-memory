@@ -106,18 +106,19 @@ export class WorkingMemoryBuffer {
    * Save buffer to disk (JSON array format).
    */
   async save(path: string, logger?: Logger): Promise<void> {
-    // Snapshot the buffer immediately (synchronously) so that items added
-    // during the async write operation don't cause inconsistencies or data loss.
-    const snapshot = [...this.buffer];
+    return this.withLock(async () => {
+      // Snapshot the buffer immediately (synchronously) inside the lock.
+      const snapshot = [...this.buffer];
 
-    try {
-      await mkdir(dirname(path), { recursive: true });
-      await writeFile(path, JSON.stringify(snapshot, null, 2), "utf-8");
-    } catch (err) {
-      if (logger) {
-        logger.warn(`[memory-hybrid][buffer] Save failed: ${String(err)}`);
+      try {
+        await mkdir(dirname(path), { recursive: true });
+        await writeFile(path, JSON.stringify(snapshot, null, 2), "utf-8");
+      } catch (err) {
+        if (logger) {
+          logger.warn(`[memory-hybrid][buffer] Save failed: ${String(err)}`);
+        }
       }
-    }
+    });
   }
 
   /**
@@ -125,76 +126,80 @@ export class WorkingMemoryBuffer {
    * If buffer is full, evicts the oldest non-promoted entry.
    * Returns promotion decision.
    */
-  add(text: string, importance: number, category: string): PromotionResult {
-    // Check for similar entry already in buffer (boost mention count)
-    const existing = this.findSimilar(text);
-    if (existing) {
-      existing.mentionCount++;
-      existing.importance = Math.max(existing.importance, importance);
+  async add(text: string, importance: number, category: string): Promise<PromotionResult> {
+    return this.withLock(async () => {
+      // Check for similar entry already in buffer (boost mention count)
+      const existing = this.findSimilar(text);
+      if (existing) {
+        existing.mentionCount++;
+        existing.importance = Math.max(existing.importance, importance);
 
-      // Check if repeated mentions trigger promotion
-      if (existing.mentionCount >= this.mentionThreshold && !existing.promoted) {
-        existing.promoted = true;
-        return {
-          promoted: true,
-          reason: `mentioned ${existing.mentionCount} times (frequency threshold)`,
-        };
+        // Check if repeated mentions trigger promotion
+        if (existing.mentionCount >= this.mentionThreshold && !existing.promoted) {
+          existing.promoted = true;
+          return {
+            promoted: true,
+            reason: `mentioned ${existing.mentionCount} times (frequency threshold)`,
+          };
+        }
+
+        return { promoted: false, reason: "already in buffer, count incremented" };
       }
 
-      return { promoted: false, reason: "already in buffer, count incremented" };
-    }
+      // Create new entry
+      const entry: BufferEntry = {
+        text,
+        importance,
+        category,
+        timestamp: Date.now(),
+        mentionCount: 1,
+        promoted: false,
+      };
 
-    // Create new entry
-    const entry: BufferEntry = {
-      text,
-      importance,
-      category,
-      timestamp: Date.now(),
-      mentionCount: 1,
-      promoted: false,
-    };
+      // Check immediate promotion criteria
+      const promotion = this.shouldPromote(entry);
+      if (promotion.promoted) {
+        entry.promoted = true;
+      }
 
-    // Check immediate promotion criteria
-    const promotion = this.shouldPromote(entry);
-    if (promotion.promoted) {
-      entry.promoted = true;
-    }
+      // Evict oldest if full
+      if (this.buffer.length >= this.maxSize) {
+        this.evictOldest();
+      }
 
-    // Evict oldest if full
-    if (this.buffer.length >= this.maxSize) {
-      this.evictOldest();
-    }
-
-    this.buffer.push(entry);
-    return promotion;
+      this.buffer.push(entry);
+      return promotion;
+    });
   }
 
   /**
    * Force promote an entry (user said "remember this").
    */
-  forcePromote(text: string): PromotionResult {
-    const existing = this.findSimilar(text);
-    if (existing) {
-      existing.promoted = true;
+  async forcePromote(text: string): Promise<PromotionResult> {
+    return this.withLock(async () => {
+      const existing = this.findSimilar(text);
+      if (existing) {
+        existing.promoted = true;
+        return { promoted: true, reason: "explicit user request" };
+      }
+
+      // Not in buffer, add and promote
+      const entry: BufferEntry = {
+        text,
+        importance: 0.9,
+        category: "other",
+        timestamp: Date.now(),
+        mentionCount: 1,
+        promoted: true,
+      };
+
+      if (this.buffer.length >= this.maxSize) {
+        this.evictOldest();
+      }
+
+      this.buffer.push(entry);
       return { promoted: true, reason: "explicit user request" };
-    }
-
-    // Not in buffer, add and promote
-    const entry: BufferEntry = {
-      text,
-      importance: 0.9,
-      category: "other",
-      timestamp: Date.now(),
-      mentionCount: 1,
-      promoted: true,
-    };
-
-    if (this.buffer.length >= this.maxSize) {
-      this.evictOldest();
-    }
-
-    this.buffer.push(entry);
-    return { promoted: true, reason: "explicit user request" };
+    });
   }
 
   /**
